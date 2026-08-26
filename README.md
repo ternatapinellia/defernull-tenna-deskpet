@@ -1,3 +1,23 @@
+v1.2已解决的更新
+
+1.解决了控制面板和今日新闻不出现的问题，可能会出现的新的问题：控制面板和今日新闻位移到随机的其他位置
+
+2.解决了英文版桌宠的控制面板和今日新闻问题，其他同上
+
+v1.2版本的问题
+
+1.没有外国新闻的api，是直接使用的中国国内的新闻翻译成英文然后显示的
+
+### v1.2 Resolved Updates
+
+1. The issue where the Control Panel and Today's News did not appear has been resolved. A new potential issue may occur: the Control Panel and Today's News may be positioned randomly.
+2. The same issue has been resolved in the English version of the desktop pet. Other issues remain the same.
+
+### v1.2 Issues
+
+1. There is currently no foreign news API. The program directly uses domestic Chinese news, translates them into English, and then displays them.
+
+
 v1.1版本bug
 
 1.气泡无法跟随角色只能固定显示在右下角
