@@ -1,0 +1,1360 @@
+# -*- coding: utf-8 -*-
+import sys
+import os
+import random
+import math
+import json
+import urllib.request
+import urllib.error
+import time
+import winreg
+from PyQt5.QtWidgets import (QApplication, QWidget, QLabel, QMenu,
+                             QPushButton, QGridLayout, QGroupBox,
+                             QSpinBox, QCheckBox, QHBoxLayout, QAction,
+                             QFrame, QVBoxLayout, QSystemTrayIcon,
+                             QScrollArea)
+from PyQt5.QtCore import Qt, QTimer, QPropertyAnimation, QPoint, QTime, QEasingCurve
+from PyQt5.QtGui import QPixmap, QPainter, QFont, QColor, QPalette, QIcon
+
+# 导入对话配置
+from dialogues import (DIALOG_START, DIALOG_CLOSE, DIALOG_CLICK,
+                       DIALOG_RANDOM, DIALOG_FLIRT, DIALOG_DRINK,
+                       DIALOG_LUNCH, DIALOG_DINNER, DIALOG_SLEEP)
+
+# ---------- 资源路径处理 ----------
+def resource_path(relative_path):
+    try:
+        base_path = sys._MEIPASS
+    except Exception:
+        base_path = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(base_path, relative_path)
+
+# ---------- 获取屏幕尺寸 ----------
+def get_screen_size():
+    app = QApplication.instance()
+    if app is None:
+        return (1920, 1080)
+    screen = app.primaryScreen()
+    if screen is None:
+        return (1920, 1080)
+    geometry = screen.availableGeometry()
+    return (geometry.width(), geometry.height())
+
+# ---------- 开机自启管理 ----------
+def set_auto_start(enabled=True):
+    try:
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, 
+                            r"Software\Microsoft\Windows\CurrentVersion\Run",
+                            0, winreg.KEY_SET_VALUE)
+        if enabled:
+            if getattr(sys, 'frozen', False):
+                exe_path = sys.executable
+            else:
+                exe_path = sys.argv[0]
+            winreg.SetValueEx(key, "DNT_DeskPet", 0, winreg.REG_SZ, f'"{exe_path}"')
+            print("Auto startup enabled")
+        else:
+            try:
+                winreg.DeleteValue(key, "DNT_DeskPet")
+                print("Auto startup disabled")
+            except:
+                pass
+        winreg.CloseKey(key)
+        return True
+    except Exception as e:
+        print(f"Failed to set auto startup: {e}")
+        return False
+
+# ---------- 新闻数据缓存 ----------
+_news_cache = None
+_cache_time = 0
+CACHE_DURATION = 600
+
+# ---------- 新闻API ----------
+def fetch_news_from_api():
+    global _news_cache, _cache_time
+
+    current_time = time.time()
+    if _news_cache is not None and (current_time - _cache_time) < CACHE_DURATION:
+        print("Using cached news data")
+        return _news_cache.copy()
+
+    apis = [
+        {
+            "url": "https://aihot.virxact.com/api/v1/items",
+            "params": {"mode": "selected", "window": "7d", "limit": 30},
+            "parser": lambda data: [
+                {"title": item.get("title", ""), "url": item.get("link", "#")}
+                for item in data.get("data", [])[:30]
+            ] if isinstance(data, dict) and data.get("data") else None
+        },
+        {
+            "url": "https://60s.viki.moe/v2/it-news",
+            "params": {},
+            "parser": lambda data: [
+                {"title": item.get("title", ""), "url": item.get("link", "#")}
+                for item in data.get("data", [])[:30]
+            ] if data.get("code") == 200 else None
+        },
+        {
+            "url": "https://hot.imsyy.top/api/thepaper",
+            "params": {},
+            "parser": lambda data: [
+                {"title": item.get("title", ""), "url": item.get("url", "#")}
+                for item in data.get("data", [])[:30]
+            ] if data.get("code") == 200 else None
+        },
+        {
+            "url": "https://hot.imsyy.top/api/zhihu",
+            "params": {},
+            "parser": lambda data: [
+                {"title": item.get("title", ""), "url": item.get("url", "#")}
+                for item in data.get("data", [])[:30]
+            ] if data.get("code") == 200 else None
+        }
+    ]
+
+    for api in apis:
+        try:
+            url = api["url"]
+            if api.get("params"):
+                param_str = "&".join([f"{k}={v}" for k, v in api["params"].items()])
+                url = f"{url}?{param_str}"
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=10) as response:
+                data = json.loads(response.read().decode('utf-8'))
+                news_list = api["parser"](data)
+                if news_list and len(news_list) > 0:
+                    print(f"Successfully fetched {len(news_list)} news from {api['url']}")
+                    _news_cache = news_list
+                    _cache_time = current_time
+                    return news_list
+        except Exception as e:
+            print(f"API {api['url']} failed: {e}")
+            continue
+
+    if _news_cache is not None:
+        print("All APIs failed, returning cached data")
+        return _news_cache.copy()
+    return None
+
+
+# ---------- 气泡控件 ----------
+class BubbleWidget(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.Tool | Qt.WindowStaysOnTopHint)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setAttribute(Qt.WA_ShowWithoutActivating)
+
+        self.bg_pixmap = QPixmap(resource_path("bubble.png"))
+        self.setFixedSize(self.bg_pixmap.size())
+
+        self.label = QLabel(self)
+        self.label.setGeometry(130, 85, 350, 200)
+        self.label.setWordWrap(True)
+        self.label.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+        self.label.setStyleSheet("background: transparent; color: #2c3e50;")
+        self.normal_font = QFont("Microsoft YaHei", 14)
+        self.big_font = QFont("Microsoft YaHei", 60)
+        self.label.setFont(self.normal_font)
+
+        self.full_text = ""
+        self.char_index = 0
+        self.typing_timer = QTimer(self)
+        self.typing_timer.timeout.connect(self.type_char)
+        self.typing_interval = 50
+
+        self.is_typing = False
+        self.is_complete = False
+
+        self.fade_animation = QPropertyAnimation(self, b"windowOpacity")
+        self.fade_animation.setDuration(500)
+        self.fade_animation.setStartValue(1.0)
+        self.fade_animation.setEndValue(0.0)
+        self.fade_animation.finished.connect(self.hide)
+
+        self.move_to_bottom_right()
+        self.hide()
+
+    def move_to_bottom_right(self):
+        screen_w, screen_h = get_screen_size()
+        x = screen_w - self.width() - 50
+        y = screen_h - self.height() - 50
+        self.move(x, y)
+
+    def get_bubble_position(self):
+        return self.x(), self.y()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.drawPixmap(0, 0, self.bg_pixmap)
+        super().paintEvent(event)
+
+    def type_char(self):
+        if self.char_index < len(self.full_text):
+            self.char_index += 1
+            current_text = self.full_text[:self.char_index]
+            self.label.setText(current_text)
+        else:
+            self.typing_timer.stop()
+            self.is_typing = False
+            self.is_complete = True
+            self.parent().on_dialog_complete()
+
+    def start_typing(self, text):
+        self.label.setFont(self.normal_font)
+        self.full_text = text
+        self.char_index = 0
+        self.label.clear()
+        self.is_typing = True
+        self.is_complete = False
+        self.move_to_bottom_right()
+        self.show()
+        self.setWindowOpacity(1.0)
+        self.fade_animation.stop()
+        self.typing_timer.start(self.typing_interval)
+
+    def show_big_text(self, text):
+        self.label.setFont(self.big_font)
+        self.label.setText(text)
+        self.full_text = text
+        self.is_typing = False
+        self.is_complete = True
+        self.move_to_bottom_right()
+        self.show()
+        self.setWindowOpacity(1.0)
+        self.fade_animation.stop()
+
+    def fade_out(self):
+        if self.isVisible():
+            self.fade_animation.start()
+
+
+# ---------- 基础面板类 ----------
+class BasePanel(QWidget):
+    def __init__(self, parent=None, panel_type="panel"):
+        super().__init__(parent)
+        self.parent_pet = parent
+        self.panel_type = panel_type
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setFixedSize(450, 500)
+        
+        self.bg_pixmap = QPixmap(resource_path("panel.png"))
+        self.setMask(self.bg_pixmap.mask())
+        
+        self._position_fixed = False
+        self._fixed_x = 0
+        self._fixed_y = 0
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.drawPixmap(0, 0, self.bg_pixmap)
+        super().paintEvent(event)
+
+    def update_position(self):
+        bubble = self.parent_pet.bubble
+        if bubble.isVisible():
+            bx, by = bubble.get_bubble_position()
+            panel_x = bx + (bubble.width() - self.width()) // 2
+            panel_y = by - self.height() - 20
+            
+            if not self._position_fixed:
+                self._fixed_x = panel_x
+                self._fixed_y = panel_y
+                self._position_fixed = True
+            
+            self.move(self._fixed_x, self._fixed_y)
+
+
+# ---------- 新闻窗口 ----------
+class NewsWindow(BasePanel):
+    def __init__(self, parent=None):
+        super().__init__(parent, panel_type="news")
+        self.bg_pixmap = QPixmap(resource_path("panel2.png"))
+        self.setMask(self.bg_pixmap.mask())
+        
+        self.news_data = []
+        self.current_page = 0
+        self.page_size = 5
+        self.is_loading = False
+
+        container = QWidget(self)
+        container.setGeometry(0, 0, 450, 500)
+        container.setStyleSheet("background: transparent;")
+
+        # Title
+        title = QLabel("Today's News", container)
+        title.setStyleSheet("color: #1a1a2c; font-size: 24px; font-weight: bold; background: transparent;")
+        title.setGeometry(60, 60, 330, 40)
+
+        # Refresh button
+        refresh_btn = QPushButton("🔄", container)
+        refresh_btn.setStyleSheet("""
+            QPushButton {
+                font-size: 18px;
+                background: transparent;
+                color: #1a1a2c;
+                border: none;
+                padding: 5px;
+                min-width: 30px;
+                min-height: 30px;
+            }
+            QPushButton:hover {
+                color: #3498db;
+            }
+            QPushButton:pressed {
+                color: #1a0dab;
+            }
+        """)
+        refresh_btn.setGeometry(380, 15, 40, 40)
+        refresh_btn.clicked.connect(self.refresh_news)
+        refresh_btn.setToolTip("Refresh News")
+
+        self.news_scroll = QScrollArea(container)
+        self.news_scroll.setGeometry(60, 110, 330, 320)
+        self.news_scroll.setStyleSheet("""
+            QScrollArea {
+                background: white;
+                border-radius: 10px;
+                border: none;
+            }
+            QScrollBar:vertical {
+                background: #f0f0f0;
+                width: 8px;
+                border-radius: 4px;
+            }
+            QScrollBar::handle:vertical {
+                background: #1a1a2c;
+                border-radius: 4px;
+                min-height: 30px;
+            }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+                height: 0px;
+            }
+        """)
+        self.news_scroll.setWidgetResizable(True)
+        self.news_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.news_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+
+        self.news_container = QWidget()
+        self.news_container.setStyleSheet("background: white; border-radius: 10px;")
+        self.news_layout = QVBoxLayout(self.news_container)
+        self.news_layout.setSpacing(12)
+        self.news_layout.setContentsMargins(15, 12, 35, 12)
+        self.news_layout.setAlignment(Qt.AlignTop)
+        self.news_scroll.setWidget(self.news_container)
+
+        self.loading_label = QLabel("Loading news...", container)
+        self.loading_label.setStyleSheet("color: #666; font-size: 18px; background: transparent;")
+        self.loading_label.setGeometry(60, 200, 330, 50)
+        self.loading_label.setAlignment(Qt.AlignCenter)
+
+        self.retry_btn = QPushButton("Retry", container)
+        self.retry_btn.setStyleSheet("""
+            QPushButton {
+                font-size: 16px;
+                background-color: #1a1a2c;
+                color: white;
+                border-radius: 8px;
+                padding: 10px 20px;
+                border: none;
+            }
+            QPushButton:hover {
+                background-color: #2a2a4c;
+            }
+        """)
+        self.retry_btn.setGeometry(140, 250, 170, 40)
+        self.retry_btn.clicked.connect(self.retry_load)
+        self.retry_btn.hide()
+
+        btn_container = QWidget(container)
+        btn_container.setGeometry(60, 440, 330, 40)
+        btn_container.setStyleSheet("background: transparent;")
+        btn_layout = QHBoxLayout(btn_container)
+        btn_layout.setSpacing(20)
+        btn_layout.setContentsMargins(0, 0, 0, 0)
+
+        self.prev_btn = QPushButton("◀ Prev")
+        self.prev_btn.setStyleSheet("""
+            QPushButton {
+                font-size: 14px;
+                background-color: #1a1a2c;
+                color: white;
+                border-radius: 5px;
+                padding: 5px 15px;
+                border: none;
+            }
+            QPushButton:hover {
+                background-color: #2a2a4c;
+            }
+            QPushButton:disabled {
+                background-color: #999;
+            }
+        """)
+        self.prev_btn.clicked.connect(self.prev_page)
+        self.prev_btn.setEnabled(False)
+
+        self.page_label = QLabel("1/1")
+        self.page_label.setStyleSheet("color: #1a1a2c; font-size: 14px; background: transparent;")
+        self.page_label.setAlignment(Qt.AlignCenter)
+
+        self.next_btn = QPushButton("Next ▶")
+        self.next_btn.setStyleSheet("""
+            QPushButton {
+                font-size: 14px;
+                background-color: #1a1a2c;
+                color: white;
+                border-radius: 5px;
+                padding: 5px 15px;
+                border: none;
+            }
+            QPushButton:hover {
+                background-color: #2a2a4c;
+            }
+            QPushButton:disabled {
+                background-color: #999;
+            }
+        """)
+        self.next_btn.clicked.connect(self.next_page)
+        self.next_btn.setEnabled(False)
+
+        btn_layout.addWidget(self.prev_btn)
+        btn_layout.addWidget(self.page_label)
+        btn_layout.addWidget(self.next_btn)
+
+        close_btn = QPushButton("✕", container)
+        close_btn.setStyleSheet("""
+            QPushButton {
+                font-size: 18px;
+                background: transparent;
+                color: #1a1a2c;
+                border: none;
+                padding: 5px;
+            }
+            QPushButton:hover {
+                color: #e74c3c;
+            }
+        """)
+        close_btn.setGeometry(410, 10, 30, 30)
+        close_btn.clicked.connect(self.hide)
+
+        self.fetch_news()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.drawPixmap(0, 0, self.bg_pixmap)
+        super().paintEvent(event)
+
+    def refresh_news(self):
+        global _news_cache, _cache_time
+        _news_cache = None
+        _cache_time = 0
+        self.is_loading = False
+        self.fetch_news()
+
+    def fetch_news(self):
+        if self.is_loading:
+            return
+        self.is_loading = True
+        self.loading_label.show()
+        self.retry_btn.hide()
+        self.prev_btn.setEnabled(False)
+        self.next_btn.setEnabled(False)
+        QTimer.singleShot(100, self._do_fetch_news)
+
+    def _do_fetch_news(self):
+        try:
+            news_data = fetch_news_from_api()
+            if news_data and len(news_data) > 0:
+                self.news_data = news_data
+                self.loading_label.hide()
+                self.retry_btn.hide()
+                self.current_page = 0
+                self.show_page()
+            else:
+                self.use_fallback_data()
+        except Exception as e:
+            print(f"Error fetching news: {e}")
+            self.use_fallback_data()
+        self.is_loading = False
+
+    def use_fallback_data(self):
+        self.news_data = [
+            {"title": "China's space station welcomes new astronauts for scientific experiments", "url": "https://www.gov.cn"},
+            {"title": "State Council issues opinions on promoting development of private economy", "url": "https://www.gov.cn"},
+            {"title": "China's new energy vehicle production exceeds 20 million units", "url": "https://www.gov.cn"},
+            {"title": "AI large models develop rapidly, multiple companies release new products", "url": "https://www.gov.cn"},
+            {"title": "National summer grain harvest achieves record high output", "url": "https://www.gov.cn"},
+            {"title": "China-ASEAN free trade area upgrade negotiations make positive progress", "url": "https://www.gov.cn"},
+            {"title": "NDRC introduces measures to promote sustained consumption recovery", "url": "https://www.gov.cn"},
+            {"title": "China's digital economy scale exceeds 50 trillion yuan", "url": "https://www.gov.cn"},
+            {"title": "National unified market construction accelerates, business environment optimized", "url": "https://www.gov.cn"},
+            {"title": "Chinese scientists achieve major breakthrough in quantum computing", "url": "https://www.gov.cn"},
+            {"title": "Rural revitalization strategy deepens, rural incomes steadily grow", "url": "https://www.gov.cn"},
+            {"title": "National Health Commission releases latest Healthy China action plan", "url": "https://www.gov.cn"},
+            {"title": "China's 5G base stations exceed 4 million, network coverage improves", "url": "https://www.gov.cn"},
+            {"title": "China-Central Asia gas pipeline cumulative gas transmission exceeds 500 billion cubic meters", "url": "https://www.gov.cn"},
+            {"title": "National urban new employment completes over 70% of annual target", "url": "https://www.gov.cn"},
+        ]
+        self.loading_label.hide()
+        self.retry_btn.hide()
+        self.current_page = 0
+        self.show_page()
+
+    def retry_load(self):
+        self.fetch_news()
+
+    def show_page(self):
+        for i in reversed(range(self.news_layout.count())):
+            widget = self.news_layout.itemAt(i).widget()
+            if widget is not None:
+                widget.deleteLater()
+
+        if not self.news_data:
+            empty_label = QLabel("No news data")
+            empty_label.setStyleSheet("color: #999; font-size: 16px; background: transparent;")
+            empty_label.setAlignment(Qt.AlignCenter)
+            self.news_layout.addWidget(empty_label)
+            self.prev_btn.setEnabled(False)
+            self.next_btn.setEnabled(False)
+            self.page_label.setText("0/0")
+            return
+
+        start = self.current_page * self.page_size
+        end = min(start + self.page_size, len(self.news_data))
+        
+        for i in range(start, end):
+            item = self.news_data[i]
+            title = item.get("title", "No title")
+            url = item.get("url", "#")
+            
+            item_widget = QWidget()
+            item_widget.setStyleSheet("""
+                QWidget {
+                    background: #f5f5f5;
+                    border-radius: 8px;
+                }
+                QWidget:hover {
+                    background: #e8e8e8;
+                }
+            """)
+            item_widget.setMinimumHeight(65)
+            
+            item_layout = QVBoxLayout(item_widget)
+            item_layout.setSpacing(4)
+            item_layout.setContentsMargins(10, 8, 10, 8)
+            
+            title_row = QWidget()
+            title_row.setStyleSheet("background: transparent;")
+            title_layout = QHBoxLayout(title_row)
+            title_layout.setContentsMargins(0, 0, 0, 0)
+            title_layout.setSpacing(5)
+            
+            num_label = QLabel(f"{i+1}.")
+            num_label.setStyleSheet("color: #1a1a2c; font-size: 14px; font-weight: bold; background: transparent;")
+            num_label.setFixedWidth(25)
+            
+            title_label = QLabel(title)
+            title_label.setStyleSheet("""
+                QLabel {
+                    color: #1a1a2c;
+                    font-size: 16px;
+                    background: transparent;
+                    font-weight: 500;
+                }
+                QLabel:hover {
+                    color: #3498db;
+                    text-decoration: underline;
+                }
+            """)
+            title_label.setWordWrap(True)
+            title_label.setCursor(Qt.PointingHandCursor)
+            title_label.mousePressEvent = lambda e, u=url: self.open_url(u)
+            
+            title_layout.addWidget(num_label)
+            title_layout.addWidget(title_label)
+            
+            if url and url != "#":
+                display_url = url
+                if len(display_url) > 50:
+                    display_url = display_url[:47] + "..."
+                link_text = f"🔗 {display_url}"
+                link_color = "#3498db"
+                link_cursor = Qt.PointingHandCursor
+                is_clickable = True
+            else:
+                link_text = "No link"
+                link_color = "#999"
+                link_cursor = Qt.ArrowCursor
+                is_clickable = False
+            
+            url_label = QLabel(link_text)
+            url_label.setStyleSheet(f"""
+                QLabel {{
+                    color: {link_color};
+                    font-size: 12px;
+                    background: transparent;
+                    text-decoration: underline;
+                }}
+                QLabel:hover {{
+                    color: #1a0dab;
+                }}
+            """)
+            url_label.setWordWrap(True)
+            url_label.setCursor(link_cursor)
+            if is_clickable:
+                url_label.mousePressEvent = lambda e, u=url: self.open_url(u)
+            
+            item_layout.addWidget(title_row)
+            item_layout.addWidget(url_label)
+            
+            self.news_layout.addWidget(item_widget)
+
+        total_pages = max(1, (len(self.news_data) + self.page_size - 1) // self.page_size)
+        self.prev_btn.setEnabled(self.current_page > 0)
+        self.next_btn.setEnabled(self.current_page < total_pages - 1)
+        self.page_label.setText(f"{self.current_page + 1}/{total_pages}")
+
+    def open_url(self, url):
+        import webbrowser
+        if url and url != "#":
+            webbrowser.open(url)
+
+    def next_page(self):
+        total_pages = (len(self.news_data) + self.page_size - 1) // self.page_size
+        if self.current_page < total_pages - 1:
+            self.current_page += 1
+            self.show_page()
+
+    def prev_page(self):
+        if self.current_page > 0:
+            self.current_page -= 1
+            self.show_page()
+
+
+# ---------- 控制面板 ----------
+class ControlPanel(BasePanel):
+    def __init__(self, parent=None):
+        super().__init__(parent, panel_type="control")
+
+        container = QWidget(self)
+        container.setGeometry(0, 0, 450, 500)
+        container.setStyleSheet("background: transparent;")
+
+        title = QLabel("Control Panel", container)
+        title.setStyleSheet("color: #1a1a2c; font-size: 28px; font-weight: bold; background: transparent;")
+        title.move(60, 60)
+
+        group1 = QGroupBox("Tomato Clock", container)
+        group1.setStyleSheet("""
+            QGroupBox {
+                color: #1a1a2c;
+                font-size: 20px;
+                border: 3px solid #1a1a2c;
+                border-radius: 10px;
+                margin-top: 10px;
+                background: white;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 10px;
+                padding: 0 10px;
+                color: #1a1a2c;
+                background: white;
+            }
+        """)
+        group1.setGeometry(60, 110, 280, 140)
+
+        layout1 = QGridLayout(group1)
+        layout1.setSpacing(8)
+        layout1.setContentsMargins(10, 20, 10, 10)
+
+        self.tomato_label = QLabel("Break Countdown: 05:00")
+        self.tomato_label.setStyleSheet("font-size: 28px; color: #1a1a2c;")
+        layout1.addWidget(self.tomato_label, 0, 0, 1, 2)
+
+        self.tomato_spin = QSpinBox()
+        self.tomato_spin.setRange(1, 120)
+        self.tomato_spin.setValue(5)
+        self.tomato_spin.setSuffix(" min")
+        self.tomato_spin.setStyleSheet("font-size: 16px; background: white; color: #1a1a2c;")
+        layout1.addWidget(QLabel("Set duration:"), 1, 0)
+        layout1.addWidget(self.tomato_spin, 1, 1)
+
+        self.tomato_btn = QPushButton("▶ Start")
+        self.tomato_btn.setStyleSheet("""
+            QPushButton {
+                font-size: 16px;
+                background-color: #27ae60;
+                color: white;
+                border-radius: 5px;
+                padding: 5px 10px;
+                border: none;
+            }
+            QPushButton:hover {
+                background-color: #2ecc71;
+            }
+            QPushButton:pressed {
+                background-color: #229954;
+            }
+        """)
+        self.tomato_btn.clicked.connect(self.toggle_tomato)
+        layout1.addWidget(self.tomato_btn, 2, 0)
+
+        self.tomato_reset_btn = QPushButton("⟳ Reset")
+        self.tomato_reset_btn.setStyleSheet("""
+            QPushButton {
+                font-size: 16px;
+                background-color: #e67e22;
+                color: white;
+                border-radius: 5px;
+                padding: 5px 10px;
+                border: none;
+            }
+            QPushButton:hover {
+                background-color: #f39c12;
+            }
+            QPushButton:pressed {
+                background-color: #d35400;
+            }
+        """)
+        self.tomato_reset_btn.clicked.connect(self.reset_tomato)
+        layout1.addWidget(self.tomato_reset_btn, 2, 1)
+
+        self.tomato_timer = QTimer(self)
+        self.tomato_timer.timeout.connect(self.update_tomato)
+        self.tomato_remaining = 0
+        self.tomato_running = False
+
+        group2 = QGroupBox("Reminders", container)
+        group2.setStyleSheet("""
+            QGroupBox {
+                color: #1a1a2c;
+                font-size: 20px;
+                border: 3px solid #1a1a2c;
+                border-radius: 10px;
+                margin-top: 10px;
+                background: white;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 10px;
+                padding: 0 10px;
+                color: #1a1a2c;
+                background: white;
+            }
+        """)
+        group2.setGeometry(60, 270, 280, 200)
+
+        layout2 = QGridLayout(group2)
+        layout2.setSpacing(5)
+        layout2.setContentsMargins(10, 20, 10, 10)
+
+        self.drink_check = QCheckBox("Drink water")
+        self.drink_check.setChecked(True)
+        self.drink_check.setStyleSheet("color: #1a1a2c;")
+        layout2.addWidget(self.drink_check, 0, 0)
+        self.drink_spin = QSpinBox()
+        self.drink_spin.setRange(5, 120)
+        self.drink_spin.setValue(30)
+        self.drink_spin.setSuffix(" min")
+        self.drink_spin.setStyleSheet("font-size: 14px; background: white; color: #1a1a2c;")
+        layout2.addWidget(self.drink_spin, 0, 1)
+
+        self.sleep_check = QCheckBox("Sleep")
+        self.sleep_check.setChecked(True)
+        self.sleep_check.setStyleSheet("color: #1a1a2c;")
+        layout2.addWidget(self.sleep_check, 1, 0)
+        sleep_h_layout = QHBoxLayout()
+        self.sleep_hour = QSpinBox()
+        self.sleep_hour.setRange(0, 23)
+        self.sleep_hour.setValue(22)
+        self.sleep_hour.setStyleSheet("font-size: 14px; background: white; color: #1a1a2c;")
+        self.sleep_min = QSpinBox()
+        self.sleep_min.setRange(0, 59)
+        self.sleep_min.setValue(0)
+        self.sleep_min.setStyleSheet("font-size: 14px; background: white; color: #1a1a2c;")
+        sleep_h_layout.addWidget(QLabel("Time:"))
+        sleep_h_layout.addWidget(self.sleep_hour)
+        sleep_h_layout.addWidget(QLabel("h"))
+        sleep_h_layout.addWidget(self.sleep_min)
+        sleep_h_layout.addWidget(QLabel("m"))
+        layout2.addLayout(sleep_h_layout, 1, 1)
+
+        self.eat_label = QLabel("Lunch: 12:00  |  Dinner: 18:00")
+        self.eat_label.setStyleSheet("font-size: 16px; color: #1a1a2c; padding: 5px 0;")
+        layout2.addWidget(self.eat_label, 2, 0, 1, 2)
+
+        self.reminder_elapsed = {'Drink': 0}
+        self.reminder_timer = QTimer(self)
+        self.reminder_timer.timeout.connect(self.check_reminders)
+        self.reminder_timer.start(60000)
+
+        self.lunch_triggered = False
+        self.dinner_triggered = False
+        self.sleep_triggered = False
+
+        self.drag_pos = None
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.drawPixmap(0, 0, self.bg_pixmap)
+        super().paintEvent(event)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self.drag_pos = event.globalPos() - self.frameGeometry().topLeft()
+        elif event.button() == Qt.RightButton:
+            self.close()
+
+    def mouseMoveEvent(self, event):
+        if event.buttons() == Qt.LeftButton and self.drag_pos is not None:
+            self.move(event.globalPos() - self.drag_pos)
+            self._fixed_x = self.x()
+            self._fixed_y = self.y()
+            self._position_fixed = True
+
+    def mouseReleaseEvent(self, event):
+        self.drag_pos = None
+
+    def toggle_tomato(self):
+        if not self.tomato_running:
+            minutes = self.tomato_spin.value()
+            self.tomato_remaining = minutes * 60
+            self.tomato_running = True
+            self.tomato_btn.setText("⏸ Pause")
+            self.tomato_btn.setStyleSheet("""
+                QPushButton {
+                    font-size: 16px;
+                    background-color: #e67e22;
+                    color: white;
+                    border-radius: 5px;
+                    padding: 5px 10px;
+                    border: none;
+                }
+                QPushButton:hover {
+                    background-color: #f39c12;
+                }
+                QPushButton:pressed {
+                    background-color: #d35400;
+                }
+            """)
+            self.tomato_timer.start(1000)
+            self.update_tomato_display()
+            self.parent_pet.start_tomato_display(self.tomato_remaining)
+        else:
+            self.tomato_timer.stop()
+            self.tomato_running = False
+            self.tomato_btn.setText("▶ Continue")
+            self.tomato_btn.setStyleSheet("""
+                QPushButton {
+                    font-size: 16px;
+                    background-color: #27ae60;
+                    color: white;
+                    border-radius: 5px;
+                    padding: 5px 10px;
+                    border: none;
+                }
+                QPushButton:hover {
+                    background-color: #2ecc71;
+                }
+                QPushButton:pressed {
+                    background-color: #229954;
+                }
+            """)
+            self.parent_pet.stop_tomato_display()
+
+    def reset_tomato(self):
+        self.tomato_timer.stop()
+        self.tomato_running = False
+        self.tomato_btn.setText("▶ Start")
+        self.tomato_btn.setStyleSheet("""
+            QPushButton {
+                font-size: 16px;
+                background-color: #27ae60;
+                color: white;
+                border-radius: 5px;
+                padding: 5px 10px;
+                border: none;
+            }
+            QPushButton:hover {
+                background-color: #2ecc71;
+            }
+            QPushButton:pressed {
+                background-color: #229954;
+            }
+        """)
+        minutes = self.tomato_spin.value()
+        self.tomato_remaining = minutes * 60
+        self.update_tomato_display()
+        self.parent_pet.stop_tomato_display()
+
+    def update_tomato(self):
+        if self.tomato_remaining > 0:
+            self.tomato_remaining -= 1
+            self.update_tomato_display()
+            self.parent_pet.update_tomato_display(self.tomato_remaining)
+        else:
+            self.tomato_timer.stop()
+            self.tomato_running = False
+            self.tomato_btn.setText("▶ Start")
+            self.tomato_btn.setStyleSheet("""
+                QPushButton {
+                    font-size: 16px;
+                    background-color: #27ae60;
+                    color: white;
+                    border-radius: 5px;
+                    padding: 5px 10px;
+                    border: none;
+                }
+                QPushButton:hover {
+                    background-color: #2ecc71;
+                }
+                QPushButton:pressed {
+                    background-color: #229954;
+                }
+            """)
+            self.parent_pet.stop_tomato_display()
+            self.parent_pet.add_dialog(random.choice(DIALOG_DRINK))
+            self.update_tomato_display()
+
+    def update_tomato_display(self):
+        m, s = divmod(self.tomato_remaining, 60)
+        self.tomato_label.setText(f"Break Countdown: {m:02d}:{s:02d}")
+
+    def check_reminders(self):
+        now = QTime.currentTime()
+        hour = now.hour()
+        minute = now.minute()
+
+        if self.drink_check.isChecked():
+            self.reminder_elapsed['Drink'] += 1
+            if self.reminder_elapsed['Drink'] >= self.drink_spin.value():
+                self.parent_pet.add_dialog(random.choice(DIALOG_DRINK))
+                self.reminder_elapsed['Drink'] = 0
+
+        if hour == 12 and minute == 0 and not self.lunch_triggered:
+            self.parent_pet.add_dialog(random.choice(DIALOG_LUNCH))
+            self.lunch_triggered = True
+        if hour != 12:
+            self.lunch_triggered = False
+
+        if hour == 18 and minute == 0 and not self.dinner_triggered:
+            self.parent_pet.add_dialog(random.choice(DIALOG_DINNER))
+            self.dinner_triggered = True
+        if hour != 18:
+            self.dinner_triggered = False
+
+        if self.sleep_check.isChecked():
+            set_h = self.sleep_hour.value()
+            set_m = self.sleep_min.value()
+            if hour == set_h and minute == set_m and not self.sleep_triggered:
+                self.parent_pet.add_dialog(random.choice(DIALOG_SLEEP))
+                self.sleep_triggered = True
+            if hour != set_h or minute != set_m:
+                self.sleep_triggered = False
+
+
+# ---------- 带淡入淡出的QLabel ----------
+class FadeLabel(QLabel):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.fade_duration = 150
+        self.opacity_effect = QPropertyAnimation(self, b"windowOpacity")
+        self.opacity_effect.setDuration(self.fade_duration)
+        self.opacity_effect.setEasingCurve(QEasingCurve.InOutQuad)
+        self.setWindowOpacity(1.0)
+        self._fade_in_pixmap = None
+        self._is_fading = False
+        self._pending_pixmap = None
+
+    def setPixmapWithFade(self, pixmap, force=False):
+        if pixmap is None or pixmap.isNull():
+            return
+        if self.pixmap() is None or self.pixmap().isNull():
+            self.setPixmap(pixmap)
+            self.setWindowOpacity(1.0)
+            return
+        if self._is_fading:
+            self._pending_pixmap = pixmap
+            return
+        if force:
+            self.setPixmap(pixmap)
+            self.setWindowOpacity(1.0)
+            return
+        self._fade_in_pixmap = pixmap
+        self.opacity_effect.stop()
+        try:
+            self.opacity_effect.finished.disconnect()
+        except:
+            pass
+        self.opacity_effect.setStartValue(1.0)
+        self.opacity_effect.setEndValue(0.0)
+        self._is_fading = True
+        self.opacity_effect.finished.connect(self._on_fade_out_complete)
+        self.opacity_effect.start()
+
+    def _on_fade_out_complete(self):
+        self._is_fading = False
+        try:
+            self.opacity_effect.finished.disconnect()
+        except:
+            pass
+        if self._pending_pixmap is not None:
+            self._fade_in_pixmap = self._pending_pixmap
+            self._pending_pixmap = None
+        if self._fade_in_pixmap is not None:
+            self.setPixmap(self._fade_in_pixmap)
+            self._fade_in_pixmap = None
+            self.opacity_effect.setStartValue(0.0)
+            self.opacity_effect.setEndValue(1.0)
+            try:
+                self.opacity_effect.finished.disconnect()
+            except:
+                pass
+            self.opacity_effect.start()
+
+
+# ---------- 主窗口 ----------
+class DesktopPet(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setAttribute(Qt.WA_ShowWithoutActivating)
+
+        self.pet_frames = []
+        for i in range(1, 10):
+            pixmap = QPixmap(resource_path(f"pet{i}.png"))
+            if not pixmap.isNull():
+                self.pet_frames.append(pixmap)
+        if not self.pet_frames:
+            self.pet_frames = [QPixmap(resource_path("pet.png"))]
+
+        self.pet_static = QPixmap(resource_path("pet.png"))
+        self.pet_happy = QPixmap(resource_path("pet-happy.png"))
+        self.current_frame_index = 0
+        self.current_pixmap = self.pet_frames[0]
+
+        pet_w = self.pet_frames[0].width()
+        pet_h = self.pet_frames[0].height()
+        self.setFixedSize(pet_w + 50, pet_h + 60)
+
+        self.label = FadeLabel(self)
+        self.label.setPixmap(self.pet_happy)
+        self.label.setWindowOpacity(1.0)
+        self.pet_x = (self.width() - pet_w) // 2
+        self.pet_y = 20
+        self.label.setGeometry(self.pet_x, self.pet_y, pet_w, pet_h)
+
+        self.bubble = BubbleWidget(self)
+
+        self.control_panel = None
+        self.news_window = None
+
+        self.animation_paused = False
+
+        self.startup_frames = [self.pet_happy] + self.pet_frames
+        self.startup_index = 0
+        self.startup_timer = QTimer(self)
+        self.startup_timer.timeout.connect(self.startup_animation)
+        self.startup_timer.start(500)
+
+        self.animation_timer = QTimer(self)
+        self.animation_timer.timeout.connect(self.next_frame)
+        self.animation_timer_started = False
+
+        self.bounce_timer = QTimer(self)
+        self.bounce_timer.timeout.connect(self.update_bounce)
+        self.bounce_timer.start(50)
+        self.bounce_time = 0
+        self.is_bouncing = True
+
+        self.dialog_queue = []
+        self.is_displaying = False
+        self.dialog_timer = None
+
+        self.tomato_display_active = False
+        self.tomato_update_timer = QTimer(self)
+
+        set_auto_start(True)
+
+        self.create_tray_icon()
+
+        self.menu = QMenu(self)
+        self.menu.addAction("Control Panel", self.show_control_panel)
+        self.menu.addAction("Flirt", self.flirt)
+        self.menu.addAction("Today's News", self.show_news)
+        self.toggle_animation_action = QAction("⏸ Pause Animation", self)
+        self.toggle_animation_action.triggered.connect(self.toggle_animation)
+        self.menu.addAction(self.toggle_animation_action)
+        self.menu.addSeparator()
+        self.menu.addAction("Exit", self.quit_app)
+
+        self.drag_pos = None
+        self.is_dragging = False
+
+        self.random_timer = QTimer(self)
+        self.random_timer.timeout.connect(self.random_dialog)
+        self.random_timer.start(30 * 60 * 1000)
+
+        self.add_dialog(random.choice(DIALOG_START))
+
+    def create_tray_icon(self):
+        icon_path = resource_path("favicon.ico")
+        if not os.path.exists(icon_path):
+            icon_path = resource_path("pet.png")
+        self.tray_icon = QSystemTrayIcon(self)
+        self.tray_icon.setIcon(QIcon(icon_path))
+        self.tray_icon.setToolTip("Desk Pet - Click to show/hide")
+        tray_menu = QMenu()
+        show_action = QAction("Show/Hide", self)
+        show_action.triggered.connect(self.toggle_visibility)
+        tray_menu.addAction(show_action)
+        control_action = QAction("Control Panel", self)
+        control_action.triggered.connect(self.show_control_panel)
+        tray_menu.addAction(control_action)
+        news_action = QAction("Today's News", self)
+        news_action.triggered.connect(self.show_news)
+        tray_menu.addAction(news_action)
+        tray_menu.addSeparator()
+        quit_action = QAction("Exit", self)
+        quit_action.triggered.connect(self.quit_app)
+        tray_menu.addAction(quit_action)
+        self.tray_icon.setContextMenu(tray_menu)
+        self.tray_icon.activated.connect(self.on_tray_activated)
+        self.tray_icon.show()
+
+    def toggle_visibility(self):
+        if self.isVisible():
+            self.hide()
+        else:
+            self.show()
+            self.raise_()
+
+    def on_tray_activated(self, reason):
+        if reason == QSystemTrayIcon.DoubleClick:
+            self.toggle_visibility()
+
+    def closeEvent(self, event):
+        event.ignore()
+        self.hide()
+        self.tray_icon.showMessage("Desk Pet", "Program minimized to system tray", QSystemTrayIcon.Information, 2000)
+
+    def startup_animation(self):
+        self.startup_index += 1
+        if self.startup_index < len(self.startup_frames):
+            self.label.setPixmapWithFade(self.startup_frames[self.startup_index])
+        else:
+            self.startup_timer.stop()
+            self.animation_timer_started = True
+            self.animation_timer.start(300)
+            self.current_frame_index = 0
+            self.current_pixmap = self.pet_frames[0]
+            self.label.setPixmap(self.current_pixmap)
+            self.label.setWindowOpacity(1.0)
+
+    def toggle_animation(self):
+        self.animation_paused = not self.animation_paused
+        if self.animation_paused:
+            self.animation_timer.stop()
+            self.label.setPixmapWithFade(self.pet_static)
+            self.toggle_animation_action.setText("▶ Start Animation")
+        else:
+            self.animation_timer.start(300)
+            self.current_frame_index = 0
+            self.current_pixmap = self.pet_frames[0]
+            self.label.setPixmapWithFade(self.current_pixmap)
+            self.toggle_animation_action.setText("⏸ Pause Animation")
+
+    def next_frame(self):
+        if self.animation_paused or not self.animation_timer_started:
+            return
+        if not self.is_dragging and self.pet_frames:
+            self.current_frame_index = (self.current_frame_index + 1) % len(self.pet_frames)
+            self.current_pixmap = self.pet_frames[self.current_frame_index]
+            if not self.is_dragging and not self.tomato_display_active:
+                self.label.setPixmapWithFade(self.current_pixmap)
+
+    def update_bounce(self):
+        if not self.is_bouncing or self.tomato_display_active:
+            return
+        self.bounce_time += 0.15
+        bounce_y = int(math.sin(self.bounce_time * 2.5) * 3)
+        bounce_x = int(math.sin(self.bounce_time * 1.8) * 2)
+        pet_w = self.pet_frames[0].width()
+        pet_h = self.pet_frames[0].height()
+        base_x = (self.width() - pet_w) // 2
+        base_y = 20
+        self.label.setGeometry(base_x + bounce_x, base_y + bounce_y, pet_w, pet_h)
+
+    def start_tomato_display(self, seconds):
+        self.tomato_display_active = True
+        if self.is_displaying:
+            self.bubble.typing_timer.stop()
+            self.is_displaying = False
+            self.clear_dialog_timer()
+        self.bubble.show_big_text(self._format_time(seconds))
+        self.tomato_update_timer.start(1000)
+
+    def update_tomato_display(self, seconds):
+        if self.tomato_display_active:
+            self.bubble.show_big_text(self._format_time(seconds))
+
+    def stop_tomato_display(self):
+        self.tomato_display_active = False
+        self.tomato_update_timer.stop()
+        if self.dialog_queue:
+            self.bubble.hide()
+            self.show_next_dialog()
+        else:
+            self.bubble.fade_out()
+
+    def _format_time(self, seconds):
+        m, s = divmod(seconds, 60)
+        return f"{m:02d}:{s:02d}"
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self.drag_pos = event.globalPos() - self.frameGeometry().topLeft()
+            self.is_dragging = False
+            self.label.setPixmap(self.pet_happy)
+            self.label.setWindowOpacity(1.0)
+            self.is_bouncing = False
+            if self.animation_timer_started:
+                self.animation_timer.stop()
+        elif event.button() == Qt.RightButton:
+            if self.control_panel is not None and self.control_panel.isVisible():
+                self.control_panel.close()
+            elif self.news_window is not None and self.news_window.isVisible():
+                self.news_window.hide()
+            else:
+                self.menu.exec_(event.globalPos())
+
+    def mouseMoveEvent(self, event):
+        if event.buttons() == Qt.LeftButton and self.drag_pos is not None:
+            distance = (event.globalPos() - self.frameGeometry().topLeft() - self.drag_pos).manhattanLength()
+            if distance > 5:
+                self.is_dragging = True
+                self.move(event.globalPos() - self.drag_pos)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            if self.animation_paused:
+                self.label.setPixmap(self.pet_static)
+                self.label.setWindowOpacity(1.0)
+            elif self.animation_timer_started:
+                self.label.setPixmap(self.current_pixmap)
+                self.label.setWindowOpacity(1.0)
+            else:
+                self.label.setPixmap(self.pet_frames[0])
+                self.label.setWindowOpacity(1.0)
+            self.is_bouncing = True
+            if not self.animation_paused and self.animation_timer_started:
+                self.animation_timer.start(300)
+            if not self.is_dragging:
+                pos = event.pos()
+                pet_rect = self.label.geometry()
+                if pet_rect.contains(pos):
+                    self.on_pet_click()
+            self.drag_pos = None
+            self.is_dragging = False
+
+    def clear_dialog_timer(self):
+        if self.dialog_timer is not None:
+            self.dialog_timer.stop()
+            self.dialog_timer = None
+
+    def add_dialog(self, text):
+        if self.tomato_display_active:
+            self.dialog_queue.append(text)
+            return
+        self.dialog_queue.append(text)
+        if not self.is_displaying:
+            self.show_next_dialog()
+
+    def show_next_dialog(self):
+        if self.tomato_display_active:
+            return
+        self.clear_dialog_timer()
+        if self.dialog_queue:
+            self.is_displaying = True
+            text = self.dialog_queue.pop(0)
+            self.bubble.start_typing(text)
+        else:
+            self.is_displaying = False
+
+    def on_dialog_complete(self):
+        self.clear_dialog_timer()
+        self.dialog_timer = QTimer(self)
+        self.dialog_timer.setSingleShot(True)
+        if self.dialog_queue:
+            self.dialog_timer.timeout.connect(self.show_next_dialog)
+        else:
+            self.dialog_timer.timeout.connect(self._fade_and_reset)
+        self.dialog_timer.start(3000)
+
+    def _fade_and_reset(self):
+        self.bubble.fade_out()
+        self.is_displaying = False
+        self.dialog_timer = None
+
+    def on_pet_click(self):
+        self.add_dialog(random.choice(DIALOG_CLICK))
+
+    def flirt(self):
+        self.add_dialog(random.choice(DIALOG_FLIRT))
+
+    def random_dialog(self):
+        if not self.tomato_display_active and not self.is_displaying:
+            self.add_dialog(random.choice(DIALOG_RANDOM))
+
+    def show_control_panel(self):
+        if self.control_panel is None:
+            self.control_panel = ControlPanel(self)
+        self.control_panel.update_position()
+        self.control_panel.show()
+        self.control_panel.raise_()
+
+    def show_news(self):
+        if self.news_window is None:
+            self.news_window = NewsWindow(self)
+        self.news_window.update_position()
+        self.news_window.show()
+        self.news_window.raise_()
+
+    def quit_app(self):
+        set_auto_start(False)
+        if hasattr(self, 'tray_icon'):
+            self.tray_icon.hide()
+        self.add_dialog(random.choice(DIALOG_CLOSE))
+        self._close_timer = QTimer(self)
+        self._close_timer.setSingleShot(True)
+        self._close_timer.timeout.connect(self._prepare_close)
+        self._close_timer.start(5000)
+
+    def _prepare_close(self):
+        self.label.setPixmap(self.pet_happy)
+        self.label.setWindowOpacity(1.0)
+        self.animation_timer.stop()
+        self.startup_timer.stop()
+        self.clear_dialog_timer()
+        QTimer.singleShot(3000, self._really_quit)
+
+    def _really_quit(self):
+        if self.control_panel:
+            self.control_panel.close()
+        if self.news_window:
+            self.news_window.close()
+        self.close()
+        QApplication.quit()
+
+
+if __name__ == "__main__":
+    app = QApplication(sys.argv)
+    app.setQuitOnLastWindowClosed(False)
+    pet = DesktopPet()
+    pet.show()
+    sys.exit(app.exec_())
