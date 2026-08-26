@@ -4,7 +4,7 @@ v1.1版本bug
 3.今日新闻暂时无法刷新，可能会出现新闻出现以后无法点击链接的情况出现
 4.角色台词后续可能继续更新和修改
 5.英文是使用中文文件进行的机翻，可能不准确
-6，英文版见你无法点出控制面板和今日新闻
+6，英文版可能无法点出控制面板和今日新闻
 7.运行今日新闻的时候可能会卡顿，一般等待十几秒钟即可
 8.本人是代码小白，发布的代码都是ai生成的代码，我不知道bug怎么修
 
@@ -24,7 +24,7 @@ Character dialogues may be updated and modified in the future.
 
 The English version is a machine translation based on the Chinese files, so it may not be accurate.
 
-In the English version, the control panel and Today's News cannot be accessed by clicking.
+In the English version, the control panel and Today's News maybe cannot be accessed by clicking.
 
 Running Today's News may cause lag; usually, waiting for about ten seconds will resolve it.
 
