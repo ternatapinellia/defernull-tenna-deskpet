@@ -14,7 +14,7 @@ v1.3 已解决的更新
 
 所有新闻内容现在以英文显示，体验更统一。
 
-⚠️ 已知限制： 该API有每日使用上限。如果超出限额，程序将自动回退到内置的默认新闻内容，确保功能可用。
+⚠️ 已知限制： 该API有每日使用上限。如果超出限额，程序将自动回退到内置的默认新闻内容，确保功能可用。除非有人向我支付这笔费用或者寻觅到了更好用的api否则我不会进行更新了。午夜新闻，和英文版的每日新闻和午夜新闻都是该api
 
 新功能 – "午夜新闻" 栏目
 
@@ -32,37 +32,7 @@ v1.3 版本的问题
 
 这是一个视觉定位问题，不影响功能。
 
-Release Notes for v1.3
-✨ New Features & Improvements
-1. News System Overhaul – Now Powered by International API
-The "Today's News" section now uses an international news API, providing broader global coverage.
-
-All news content is now displayed in English for a consistent experience.
-
-⚠️ Known Limitation: The API has a daily usage limit. If the quota is exceeded, the program will automatically fall back to built-in default news content to ensure functionality.
-
-2. New Feature – "Midnight News" Section
-A brand new "Midnight News" category has been added to the menu.
-
-This section focuses on crime-related events, including topics such as murder, shootings, violence, and other criminal incidents.
-
-⚠️ Known Limitation: News content may vary between domestic and international sources due to differences in reporting and availability.
-
-🐛 Known Issues for v1.3
-1. Panel Positioning Offset
-The Control Panel and News windows may appear slightly too far from the desktop pet.
-
-This is a visual positioning issue and does not affect functionality.
-
-Will be addressed in a future update to improve UI/UX alignment.
-
-📦 Download
-English Version: dnt桌宠en-v1.3.zip
-
-Chinese Version: dnt桌宠cn-v1.3.zip
-
-🔗 Release Links
-GitHub Release Page: https://github.com/ternatapinellia/defernull-tenna-deskpet/releases/tag/v1.3
+新闻窗口在第一次加载显示的时候会因为调用api而稍微卡顿，时间十几秒到三十秒不等。
 
 v1.2已解决的更新
 
@@ -73,15 +43,6 @@ v1.2已解决的更新
 v1.2版本的问题
 
 1.没有外国新闻的api，是直接使用的中国国内的新闻翻译成英文然后显示的
-
-### v1.2 Resolved Updates
-
-1. The issue where the Control Panel and Today's News did not appear has been resolved. A new potential issue may occur: the Control Panel and Today's News may be positioned randomly.
-2. The same issue has been resolved in the English version of the desktop pet. Other issues remain the same.
-
-### v1.2 Issues
-
-1. There is currently no foreign news API. The program directly uses domestic Chinese news, translates them into English, and then displays them.
 
 v1.1版本bug
 
@@ -107,29 +68,7 @@ v1.1版本bug
 
 2.index是桌宠源代码，dialogue是对话代码，需要安装python才可以使用install进行安装，run可以测试软件运行，pack是打包。
 
-Version 1.1 Bugs:
+🔗 Release Links
+GitHub Release Page: https://github.com/ternatapinellia/defernull-tenna-deskpet/releases/tag/v1.3
 
-Speech bubbles cannot follow the character and are fixed in the lower-right corner.
-
-Possible bug: The control panel and Today's News sometimes do not display when clicked. This should be a code issue; currently, the only fix is to restart or refresh.
-
-Today's News cannot be refreshed at the moment. There may also be cases where links cannot be clicked after news appears.
-
-Character dialogues may be updated and modified in the future.
-
-The English version is a machine translation based on the Chinese files, so it may not be accurate.
-
-In the English version, the control panel and Today's News maybe cannot be accessed by clicking.
-
-Running Today's News may cause lag; usually, waiting for about ten seconds will resolve it.
-
-I am a coding novice; all the code released here is AI-generated, so I don't know how to fix the bugs.
-
-Instructions:
-
-Left-click to talk, right-click to display the menu and exit. At fixed times, there will be prompts for drinking, eating, and sleeping.
-
-"index" is the desktop pet source code, and "dialogue" is the dialogue code. Python needs to be installed to use "install" for setup. "run" can be used to test the software, and "pack" is for packaging.
-
-
-
+下载release界面zip后解压，直接双击快捷方式便可使用。
