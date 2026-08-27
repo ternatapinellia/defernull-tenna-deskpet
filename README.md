@@ -1,10 +1,10 @@
 使用说明
 
-左键点击桌宠对话，右键点击显示菜单和退出，进入控制面板和新闻界面同样右键点击桌宠退出。可切换中英文，如有不适可暂停、隐藏桌宠和暂停自动对话，会暂停时间间隔性对话和点击桌宠时对话，固定时间会有喝水吃饭和睡觉提示
+左键点击桌宠对话，右键点击显示菜单和退出，进入控制面板和新闻界面同样右键点击桌宠退出。可切换中英文，如有不适可暂停、隐藏桌宠和暂停自动对话，会暂停时间间隔性对话和点击桌宠时对话，固定时间会有喝水吃饭和睡觉提示，桌宠自带开机自启功能，如不需要可以自行去系统中关闭，或者是打开。
 
 Instructions
 
-Left-click on the pet to trigger a dialogue. Right-click to display the menu and exit. To exit the Control Panel and News interface, right-click on the pet as well. You can switch between Chinese and English. If you find it uncomfortable, you can pause, hide the pet, and pause auto-dialogue. This will pause timed interval dialogues and click-triggered dialogues. There are fixed-time reminders for drinking water, eating, and sleeping.
+Left-click on the pet to trigger a dialogue. Right-click to display the menu and exit. To exit the Control Panel and News interface, right-click on the pet as well. You can switch between Chinese and English. If you find it uncomfortable, you can pause, hide the pet, and pause auto-dialogue. This will pause timed interval dialogues and click-triggered dialogues. There are fixed-time reminders for drinking water, eating, and sleeping.The desktop pet comes with a built-in auto-start feature. If you do not need it, you can disable or enable it manually in the system settings.
 
 Release Links/下载链接
 https://github.com/ternatapinellia/defernull-tenna-deskpet/releases/tag/v2.0
