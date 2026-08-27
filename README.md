@@ -3,6 +3,7 @@ PREVIEW
 <img width="570" height="795" alt="屏幕截图 2026-08-26 154359" src="https://github.com/user-attachments/assets/d4c4f48d-5470-4e72-8372-028a94355a14" />
 <img width="432" height="733" alt="屏幕截图 2026-08-26 154313" src="https://github.com/user-attachments/assets/3f362457-11e4-4705-ab82-1a284aafcf10" />
 <img width="482" height="770" alt="屏幕截图 2026-08-26 154302" src="https://github.com/user-attachments/assets/c6f0e9be-ad18-4594-bbfe-57f1d16f0054" />
+
 https://github.com/user-attachments/assets/1976eea6-9234-41fb-9144-256ac8ccacea
 
 v1.3 已解决的更新
