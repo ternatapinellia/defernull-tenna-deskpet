@@ -11,6 +11,8 @@ https://github.com/ternatapinellia/defernull-tenna-deskpet/releases/tag/v1.3
 
 下载release界面zip后解压，直接双击dnt=deskpet的快捷方式便可使用。
 
+TIPS:作者后续可能会再度更新对话词条或增设功能，目前版本功能已经完整。
+
 PREVIEW
 <img width="570" height="980" alt="屏幕截图 2026-08-26 154427" src="https://github.com/user-attachments/assets/4eb2c11d-4b66-4960-911e-682777d19d23" />
 <img width="570" height="795" alt="屏幕截图 2026-08-26 154359" src="https://github.com/user-attachments/assets/d4c4f48d-5470-4e72-8372-028a94355a14" />
@@ -19,7 +21,7 @@ PREVIEW
 
 https://github.com/user-attachments/assets/1976eea6-9234-41fb-9144-256ac8ccacea
 
-————————
+——
 
 v2.0更新
 
@@ -45,9 +47,7 @@ v2.0bug
 
 6.可能存在其他作者未发现的bug
 
-TIPS:作者后续可能会再度更新对话词条或增设功能，目前版本功能已经完整。
-
-————————
+——
 
 v1.4更新
 
@@ -57,7 +57,7 @@ bug
 
 1.中文版的午夜新闻给的关键词限制很多，所以可能会只显示一条甚至没有，英文版没有限制因为我看不懂
 
-————————————————
+——
 
 v1.3 已解决的更新
 
@@ -87,7 +87,7 @@ v1.3 版本的问题
 
 新闻窗口在第一次加载显示的时候会因为调用api而稍微卡顿，时间十几秒到三十秒不等。
 
-————————————————
+——
 
 v1.2已解决的更新
 
@@ -99,7 +99,7 @@ v1.2版本的问题
 
 1.没有外国新闻的api，是直接使用的中国国内的新闻翻译成英文然后显示的
 
-————————————
+——
 
 v1.1版本bug
 
