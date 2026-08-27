@@ -1,3 +1,61 @@
+v1.3 已解决的更新
+
+新闻系统升级 – 现已支持国际API
+
+"今日新闻" 现在使用国际新闻API，提供更广泛的全球新闻覆盖。
+
+所有新闻内容现在以英文显示，体验更统一。
+
+⚠️ 已知限制： 该API有每日使用上限。如果超出限额，程序将自动回退到内置的默认新闻内容，确保功能可用。
+
+新功能 – "午夜新闻" 栏目
+
+菜单中新增了 "午夜新闻" 分类。
+
+该栏目主要聚焦于犯罪相关事件，包括谋杀、枪击、暴力等刑事案件。
+
+⚠️ 已知限制： 由于报道方式和可用性差异，国内外新闻内容可能有所不同。
+
+v1.3 版本的问题
+
+面板位置偏移
+
+控制面板 和 新闻窗口 距离桌宠角色可能稍微有点远。
+
+这是一个视觉定位问题，不影响功能。
+
+Release Notes for v1.3
+✨ New Features & Improvements
+1. News System Overhaul – Now Powered by International API
+The "Today's News" section now uses an international news API, providing broader global coverage.
+
+All news content is now displayed in English for a consistent experience.
+
+⚠️ Known Limitation: The API has a daily usage limit. If the quota is exceeded, the program will automatically fall back to built-in default news content to ensure functionality.
+
+2. New Feature – "Midnight News" Section
+A brand new "Midnight News" category has been added to the menu.
+
+This section focuses on crime-related events, including topics such as murder, shootings, violence, and other criminal incidents.
+
+⚠️ Known Limitation: News content may vary between domestic and international sources due to differences in reporting and availability.
+
+🐛 Known Issues for v1.3
+1. Panel Positioning Offset
+The Control Panel and News windows may appear slightly too far from the desktop pet.
+
+This is a visual positioning issue and does not affect functionality.
+
+Will be addressed in a future update to improve UI/UX alignment.
+
+📦 Download
+English Version: dnt桌宠en-v1.3.zip
+
+Chinese Version: dnt桌宠cn-v1.3.zip
+
+🔗 Release Links
+GitHub Release Page: https://github.com/ternatapinellia/defernull-tenna-deskpet/releases/tag/v1.3
+
 v1.2已解决的更新
 
 1.解决了控制面板和今日新闻不出现的问题，可能会出现的新的问题：控制面板和今日新闻位移到随机的其他位置
@@ -16,7 +74,6 @@ v1.2版本的问题
 ### v1.2 Issues
 
 1. There is currently no foreign news API. The program directly uses domestic Chinese news, translates them into English, and then displays them.
-
 
 v1.1版本bug
 
