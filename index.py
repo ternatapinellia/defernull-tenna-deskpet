@@ -2205,9 +2205,9 @@ class DesktopPet(QWidget):
 
         role_line = random.choice(role_lines)
         if self.lang == "en":
-            message = f'You wrote: "{note_sentence}"\n\n{role_line}'
+            message = f'You wrote: "{note_sentence}"{role_line}'
         else:
-            message = f'你写过：" {note_sentence} "\n\n{role_line}'
+            message = f'你写过：" {note_sentence} "{role_line}'
         self.add_dialog(message)
 
     def show_control_panel(self):
