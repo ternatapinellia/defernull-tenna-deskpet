@@ -360,6 +360,16 @@ class BubbleWidget(QWidget):
         self.is_typing = False
         self.is_complete = False
 
+        # Reminder confirmation button for Drink / Lunch / Dinner / Sleep
+        self.confirm_button = QPushButton(self)
+        self.confirm_button.setCursor(Qt.PointingHandCursor)
+        self.confirm_button.clicked.connect(self._confirm_clicked)
+        self.confirm_button.hide()
+
+        self.confirm_timer = QTimer(self)
+        self.confirm_timer.setSingleShot(True)
+        self.confirm_timer.timeout.connect(self._confirm_timeout)
+
         self.fade_animation = QPropertyAnimation(self, b"windowOpacity")
         self.fade_animation.setDuration(500)
         self.fade_animation.setStartValue(1.0)
@@ -368,6 +378,54 @@ class BubbleWidget(QWidget):
 
         self.move_to_bottom_right()
         self.hide()
+
+    def _update_confirm_button_style(self):
+        lang = getattr(self.parent(), "lang", "zh")
+        self.confirm_button.setText("Confirm" if lang == "en" else "确认")
+
+        screen_w, screen_h = get_screen_size()
+        scale = min(screen_w / 1920, screen_h / 1080)
+
+        self.confirm_button.setGeometry(
+            self.width() - int(145 * scale),
+            self.height() - int(58 * scale),
+            int(115 * scale),
+            int(38 * scale)
+        )
+        self.confirm_button.setStyleSheet(f"""
+            QPushButton {{
+                font-family: "Microsoft YaHei";
+                font-size: {int(14 * scale)}px;
+                font-weight: bold;
+                color: white;
+                background-color: #1a1a2c;
+                border: none;
+                border-radius: {int(8 * scale)}px;
+                padding: {int(4 * scale)}px {int(10 * scale)}px;
+            }}
+            QPushButton:hover {{ background-color: #2a2a4c; }}
+            QPushButton:pressed {{ background-color: #111122; }}
+        """)
+
+    def show_confirmation_button(self):
+        self._update_confirm_button_style()
+        self.confirm_button.show()
+        self.confirm_button.raise_()
+        self.confirm_timer.start(60000)
+
+    def hide_confirmation_button(self):
+        self.confirm_timer.stop()
+        self.confirm_button.hide()
+
+    def _confirm_clicked(self):
+        self.hide_confirmation_button()
+        if self.parent() is not None:
+            self.parent().confirm_dialog()
+
+    def _confirm_timeout(self):
+        self.hide_confirmation_button()
+        if self.parent() is not None:
+            self.parent().confirm_dialog()
 
     def move_to_bottom_right(self):
         screen_w, screen_h = get_screen_size()
@@ -394,7 +452,7 @@ class BubbleWidget(QWidget):
             self.is_complete = True
             self.parent().on_dialog_complete()
 
-    def start_typing(self, text):
+    def start_typing(self, text, requires_confirmation=False):
         self.label.setFont(self.normal_font)
         self.full_text = text
         self.char_index = 0
@@ -405,6 +463,9 @@ class BubbleWidget(QWidget):
         self.show()
         self.setWindowOpacity(1.0)
         self.fade_animation.stop()
+        self.hide_confirmation_button()
+        if requires_confirmation:
+            self.show_confirmation_button()
         self.typing_timer.start(self.typing_interval)
 
     def show_big_text(self, text):
@@ -417,10 +478,18 @@ class BubbleWidget(QWidget):
         self.show()
         self.setWindowOpacity(1.0)
         self.fade_animation.stop()
+        self.hide_confirmation_button()
 
     def fade_out(self):
+        self.hide_confirmation_button()
         if self.isVisible():
             self.fade_animation.start()
+
+    def dismiss(self):
+        self.typing_timer.stop()
+        self.hide_confirmation_button()
+        self.fade_animation.stop()
+        self.hide()
 
 # ---------- 基础面板类 ----------
 class BasePanel(QWidget):
@@ -1623,7 +1692,7 @@ class ControlPanel(BasePanel):
                 QPushButton:pressed {{ background-color: #229954; }}
             """)
             self.parent_pet.stop_tomato_display()
-            self.parent_pet.add_dialog(random.choice(get_dialogues(self.parent_pet.lang, 'drink')))
+            self.parent_pet.add_dialog(random.choice(get_dialogues(self.parent_pet.lang, 'drink')), requires_confirmation=True)
             self.update_tomato_display()
 
     def update_tomato_display(self):
@@ -1642,17 +1711,17 @@ class ControlPanel(BasePanel):
         if self.drink_check.isChecked():
             self.reminder_elapsed['喝水'] += 1
             if self.reminder_elapsed['喝水'] >= self.drink_spin.value():
-                self.parent_pet.add_dialog(random.choice(get_dialogues(self.parent_pet.lang, 'drink')))
+                self.parent_pet.add_dialog(random.choice(get_dialogues(self.parent_pet.lang, 'drink')), requires_confirmation=True)
                 self.reminder_elapsed['喝水'] = 0
 
         if hour == 12 and minute == 0 and not self.lunch_triggered:
-            self.parent_pet.add_dialog(random.choice(get_dialogues(self.parent_pet.lang, 'lunch')))
+            self.parent_pet.add_dialog(random.choice(get_dialogues(self.parent_pet.lang, 'lunch')), requires_confirmation=True)
             self.lunch_triggered = True
         if hour != 12:
             self.lunch_triggered = False
 
         if hour == 18 and minute == 0 and not self.dinner_triggered:
-            self.parent_pet.add_dialog(random.choice(get_dialogues(self.parent_pet.lang, 'dinner')))
+            self.parent_pet.add_dialog(random.choice(get_dialogues(self.parent_pet.lang, 'dinner')), requires_confirmation=True)
             self.dinner_triggered = True
         if hour != 18:
             self.dinner_triggered = False
@@ -1661,7 +1730,7 @@ class ControlPanel(BasePanel):
             set_h = self.sleep_hour.value()
             set_m = self.sleep_min.value()
             if hour == set_h and minute == set_m and not self.sleep_triggered:
-                self.parent_pet.add_dialog(random.choice(get_dialogues(self.parent_pet.lang, 'sleep')))
+                self.parent_pet.add_dialog(random.choice(get_dialogues(self.parent_pet.lang, 'sleep')), requires_confirmation=True)
                 self.sleep_triggered = True
             if hour != set_h or minute != set_m:
                 self.sleep_triggered = False
@@ -1804,6 +1873,7 @@ class DesktopPet(QWidget):
         self.dialog_queue = []
         self.is_displaying = False
         self.dialog_timer = None
+        self.current_dialog_requires_confirmation = False
 
         self.tomato_display_active = False
         self.tomato_update_timer = QTimer(self)
@@ -1868,6 +1938,8 @@ class DesktopPet(QWidget):
         else:
             self.lang = 'zh'
         self.update_menu_language()
+        if self.bubble.isVisible() and self.current_dialog_requires_confirmation:
+            self.bubble._update_confirm_button_style()
         if self.control_panel:
             self.control_panel.update_language(self.lang)
         if self.news_window:
@@ -2127,11 +2199,12 @@ class DesktopPet(QWidget):
             self.dialog_timer.stop()
             self.dialog_timer = None
 
-    def add_dialog(self, text):
+    def add_dialog(self, text, requires_confirmation=False):
+        dialog_item = (text, requires_confirmation)
         if self.tomato_display_active:
-            self.dialog_queue.append(text)
+            self.dialog_queue.append(dialog_item)
             return
-        self.dialog_queue.append(text)
+        self.dialog_queue.append(dialog_item)
         if not self.is_displaying:
             self.show_next_dialog()
 
@@ -2141,10 +2214,12 @@ class DesktopPet(QWidget):
         self.clear_dialog_timer()
         if self.dialog_queue:
             self.is_displaying = True
-            text = self.dialog_queue.pop(0)
-            self.bubble.start_typing(text)
+            text, requires_confirmation = self.dialog_queue.pop(0)
+            self.current_dialog_requires_confirmation = requires_confirmation
+            self.bubble.start_typing(text, requires_confirmation)
         else:
             self.is_displaying = False
+            self.current_dialog_requires_confirmation = False
 
     def on_dialog_complete(self):
         self.clear_dialog_timer()
@@ -2154,11 +2229,22 @@ class DesktopPet(QWidget):
             self.dialog_timer.timeout.connect(self.show_next_dialog)
         else:
             self.dialog_timer.timeout.connect(self._fade_and_reset)
-        self.dialog_timer.start(3000)
+        self.dialog_timer.start(
+            60000 if self.current_dialog_requires_confirmation else 3000
+        )
+
+    def confirm_dialog(self):
+        self.clear_dialog_timer()
+        self.bubble.dismiss()
+        self.is_displaying = False
+        self.current_dialog_requires_confirmation = False
+        if self.dialog_queue and not self.tomato_display_active:
+            self.show_next_dialog()
 
     def _fade_and_reset(self):
         self.bubble.fade_out()
         self.is_displaying = False
+        self.current_dialog_requires_confirmation = False
         self.dialog_timer = None
 
     def on_pet_click(self):
