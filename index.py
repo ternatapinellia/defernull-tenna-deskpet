@@ -7,11 +7,12 @@ import json
 import urllib.request
 import urllib.error
 import time
+import winreg
 from PyQt5.QtWidgets import (QApplication, QWidget, QLabel, QMenu,
                              QPushButton, QGridLayout, QGroupBox,
                              QSpinBox, QCheckBox, QHBoxLayout, QAction,
                              QFrame, QVBoxLayout, QSystemTrayIcon,
-                             QScrollArea)
+                             QScrollArea, QPlainTextEdit)
 from PyQt5.QtCore import Qt, QTimer, QPropertyAnimation, QPoint, QTime, QEasingCurve
 from PyQt5.QtGui import QPixmap, QPainter, QFont, QColor, QPalette, QIcon
 
@@ -45,6 +46,40 @@ def resource_path(relative_path):
     except Exception:
         base_path = os.path.abspath(".")
     return os.path.join(base_path, relative_path)
+
+# ---------- Windows 开机自启 ----------
+def set_windows_autostart(enabled=True):
+    """将桌宠加入/移出当前 Windows 用户的开机启动。"""
+    try:
+        run_key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
+        app_name = "DNTDesktopPet"
+
+        with winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            run_key_path,
+            0,
+            winreg.KEY_SET_VALUE | winreg.KEY_QUERY_VALUE
+        ) as key:
+            if enabled:
+                # .py 运行时使用 pythonw.exe，避免开机启动时弹出黑色命令行窗口；
+                # PyInstaller 打包成 exe 时则直接使用 exe。
+                executable = sys.executable
+                if executable.lower().endswith("python.exe"):
+                    pythonw = os.path.join(os.path.dirname(executable), "pythonw.exe")
+                    if os.path.exists(pythonw):
+                        executable = pythonw
+
+                script_path = os.path.abspath(sys.argv[0])
+                command = f'"{executable}" "{script_path}"'
+                winreg.SetValueEx(key, app_name, 0, winreg.REG_SZ, command)
+            else:
+                try:
+                    winreg.DeleteValue(key, app_name)
+                except FileNotFoundError:
+                    pass
+    except Exception as e:
+        print(f"设置 Windows 开机自启失败: {e}")
+
 
 # ---------- 获取屏幕尺寸 ----------
 def get_screen_size():
@@ -257,6 +292,39 @@ def fetch_news(lang='zh'):
     else:
         return fetch_news_zh()
 
+# ---------- 便签文件 ----------
+def get_note_path():
+    """便签始终保存到桌宠程序（.py/.exe）所在目录下的 note.txt。"""
+    return os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), "note.txt")
+
+
+def load_notes():
+    """读取 note.txt，返回完整文本。"""
+    path = get_note_path()
+    try:
+        if not os.path.exists(path):
+            with open(path, "w", encoding="utf-8") as f:
+                f.write("")
+            return ""
+        with open(path, "r", encoding="utf-8") as f:
+            return f.read()
+    except Exception as e:
+        print(f"读取便签失败: {e}")
+        return ""
+
+
+def save_notes(text):
+    """覆盖保存完整便签内容。"""
+    path = get_note_path()
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(text)
+        return True
+    except Exception as e:
+        print(f"保存便签失败: {e}")
+        return False
+
+
 # ---------- 气泡控件 ----------
 class BubbleWidget(QWidget):
     def __init__(self, parent=None):
@@ -402,6 +470,8 @@ class BasePanel(QWidget):
                 panel_x = bx + (bubble.width() - self.width()) // 2 - 800
             elif self.panel_type == "midnight":
                 panel_x = bx + (bubble.width() - self.width()) // 2 - 1200
+            elif self.panel_type == "note":
+                panel_x = bx + (bubble.width() - self.width()) // 2
             else:
                 panel_x = bx + (bubble.width() - self.width()) // 2
             panel_y = by - self.height() - int(20 * self.scale)
@@ -1100,6 +1170,158 @@ class MidnightNewsWindow(BasePanel):
             self.current_page -= 1
             self.show_page()
 
+# ---------- 便签窗口 ----------
+class NoteWindow(BasePanel):
+    """可编辑、可上下滚动并持久化到 note.txt 的便签。"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent, panel_type="note")
+
+        self.container = QWidget(self)
+        self.container.setGeometry(0, 0, self.panel_width, self.panel_height)
+        self.container.setStyleSheet("background: transparent;")
+
+        self.title_label = QLabel(self.container)
+        self.title_label.setStyleSheet(
+            f"color: #1a1a2c; font-size: {int(24 * self.scale)}px; "
+            "font-weight: bold; background: transparent;"
+        )
+        self.title_label.setGeometry(
+            int(60 * self.scale), int(55 * self.scale),
+            int(300 * self.scale), int(45 * self.scale)
+        )
+
+        self.note_edit = QPlainTextEdit(self.container)
+        self.note_edit.setGeometry(
+            int(55 * self.scale), int(105 * self.scale),
+            int(340 * self.scale), int(315 * self.scale)
+        )
+        self.note_edit.setLineWrapMode(QPlainTextEdit.WidgetWidth)
+        self.note_edit.setPlaceholderText("Write your notes here...")
+        self.note_edit.setStyleSheet(f"""
+            QPlainTextEdit {{
+                background: white;
+                color: #2c3e50;
+                border: none;
+                border-radius: {int(14 * self.scale)}px;
+                padding: {int(14 * self.scale)}px;
+                font-size: {int(20 * self.scale)}px;
+                selection-background-color: #d9eaff;
+            }}
+            QScrollBar:vertical {{
+                background: #f0f0f0;
+                width: {int(8 * self.scale)}px;
+                border-radius: {int(4 * self.scale)}px;
+            }}
+            QScrollBar::handle:vertical {{
+                background: #1a1a2c;
+                border-radius: {int(4 * self.scale)}px;
+                min-height: {int(30 * self.scale)}px;
+            }}
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+                height: 0px;
+            }}
+        """)
+
+        self.save_btn = QPushButton(self.container)
+        self.save_btn.setGeometry(
+            int(95 * self.scale), int(440 * self.scale),
+            int(115 * self.scale), int(40 * self.scale)
+        )
+        self.save_btn.setStyleSheet(f"""
+            QPushButton {{
+                font-size: {int(14 * self.scale)}px;
+                background-color: #1a1a2c;
+                color: white;
+                border-radius: {int(7 * self.scale)}px;
+                padding: {int(5 * self.scale)}px {int(10 * self.scale)}px;
+                border: none;
+            }}
+            QPushButton:hover {{ background-color: #2a2a4c; }}
+            QPushButton:pressed {{ background-color: #111122; }}
+        """)
+        self.save_btn.clicked.connect(self.save_note)
+
+        self.clear_btn = QPushButton(self.container)
+        self.clear_btn.setGeometry(
+            int(240 * self.scale), int(440 * self.scale),
+            int(115 * self.scale), int(40 * self.scale)
+        )
+        self.clear_btn.setStyleSheet(f"""
+            QPushButton {{
+                font-size: {int(14 * self.scale)}px;
+                background-color: #e67e22;
+                color: white;
+                border-radius: {int(7 * self.scale)}px;
+                padding: {int(5 * self.scale)}px {int(10 * self.scale)}px;
+                border: none;
+            }}
+            QPushButton:hover {{ background-color: #f39c12; }}
+            QPushButton:pressed {{ background-color: #d35400; }}
+        """)
+        self.clear_btn.clicked.connect(self.clear_note)
+
+        self.close_btn = QPushButton("✕", self.container)
+        self.close_btn.setStyleSheet(f"""
+            QPushButton {{
+                font-size: {int(18 * self.scale)}px;
+                background: transparent;
+                color: #1a1a2c;
+                border: none;
+                padding: {int(5 * self.scale)}px;
+            }}
+            QPushButton:hover {{ color: #e74c3c; }}
+        """)
+        self.close_btn.setGeometry(
+            int(410 * self.scale), int(10 * self.scale),
+            int(30 * self.scale), int(30 * self.scale)
+        )
+        self.close_btn.clicked.connect(self.hide)
+
+        self.update_language(parent.lang if parent else "zh")
+        self.reload_note()
+
+    def reload_note(self):
+        """每次打开前重新读取，确保显示 note.txt 当前的完整内容。"""
+        self.note_edit.setPlainText(load_notes())
+        self.note_edit.moveCursor(self.note_edit.textCursor().End)
+        self.note_edit.verticalScrollBar().setValue(
+            self.note_edit.verticalScrollBar().maximum()
+        )
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.reload_note()
+        self.note_edit.setFocus()
+
+    def save_note(self):
+        if save_notes(self.note_edit.toPlainText()):
+            self.parent_pet.add_dialog(
+                random.choice(get_dialogues(self.parent_pet.lang, "note_saved"))
+            )
+        else:
+            self.parent_pet.add_dialog(
+                random.choice(get_dialogues(self.parent_pet.lang, "note_error"))
+            )
+
+    def clear_note(self):
+        self.note_edit.clear()
+        self.save_note()
+
+    def update_language(self, lang):
+        if lang == "en":
+            self.title_label.setText("Notes")
+            self.note_edit.setPlaceholderText("Write your notes here...")
+            self.save_btn.setText("Save")
+            self.clear_btn.setText("Clear")
+            self.close_btn.setToolTip("Close")
+        else:
+            self.title_label.setText("便签")
+            self.note_edit.setPlaceholderText("在这里输入你的便签内容……")
+            self.save_btn.setText("保存")
+            self.clear_btn.setText("清空")
+            self.close_btn.setToolTip("关闭")
+
 # ---------- 控制面板 ----------
 class ControlPanel(BasePanel):
     def __init__(self, parent=None):
@@ -1507,6 +1729,8 @@ class FadeLabel(QLabel):
 class DesktopPet(QWidget):
     def __init__(self):
         super().__init__()
+        # 开机自启：Windows 登录后自动启动桌宠。
+        set_windows_autostart(True)
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setAttribute(Qt.WA_ShowWithoutActivating)
@@ -1556,6 +1780,7 @@ class DesktopPet(QWidget):
         self.control_panel = None
         self.news_window = None
         self.midnight_window = None
+        self.note_window = None
 
         self.animation_paused = False
         self.auto_dialog_enabled = True
@@ -1594,6 +1819,8 @@ class DesktopPet(QWidget):
         self.news_action.triggered.connect(self.show_news)
         self.midnight_action = QAction(self)
         self.midnight_action.triggered.connect(self.show_midnight_news)
+        self.note_action = QAction(self)
+        self.note_action.triggered.connect(self.show_note)
         self.toggle_animation_action = QAction(self)
         self.toggle_animation_action.triggered.connect(self.toggle_animation)
         self.toggle_visibility_action = QAction(self)
@@ -1606,6 +1833,7 @@ class DesktopPet(QWidget):
         self.quit_action.triggered.connect(self.quit_app)
 
         self.menu.addAction(self.control_action)
+        self.menu.addAction(self.note_action)
         self.menu.addAction(self.flirt_action)
         self.menu.addAction(self.news_action)
         self.menu.addAction(self.midnight_action)
@@ -1626,6 +1854,12 @@ class DesktopPet(QWidget):
         self.random_timer.timeout.connect(self.random_dialog)
         self.random_timer.start(30 * 60 * 1000)
 
+        # 每小时检查一次便签；若 note.txt 有内容，则随机抽取一句并附带角色台词。
+        self.note_repeat_timer = QTimer(self)
+        self.note_repeat_timer.timeout.connect(self.repeat_random_note)
+        self.note_repeat_timer.start(60 * 1000)
+        self.note_repeat_elapsed = 0
+
         self.add_dialog(random.choice(get_dialogues(self.lang, 'start')))
 
     def switch_language(self):
@@ -1642,10 +1876,13 @@ class DesktopPet(QWidget):
         if self.midnight_window:
             self.midnight_window.update_language(self.lang)
             self.midnight_window.refresh_news()
+        if self.note_window:
+            self.note_window.update_language(self.lang)
 
     def update_menu_language(self):
         if self.lang == 'en':
             self.control_action.setText("Control Panel")
+            self.note_action.setText("Notes")
             self.flirt_action.setText("Flirt")
             self.news_action.setText("Today's News")
             self.midnight_action.setText("Midnight News")
@@ -1670,11 +1907,12 @@ class DesktopPet(QWidget):
                             action.setText("Exit")
         else:
             self.control_action.setText("控制面板")
+            self.note_action.setText("便签")
             self.flirt_action.setText("调情")
             self.news_action.setText("今日新闻")
             self.midnight_action.setText("午夜新闻")
             self.toggle_animation_action.setText("暂停动画" if not self.animation_paused else "开始动画")
-            self.toggle_visibility_action.setText("显示/隐藏" if self.isVisible() else "显示/隐藏")
+            self.toggle_visibility_action.setText("隐藏桌宠" if self.isVisible() else "隐藏桌宠")
             self.toggle_auto_dialog_action.setText("暂停自动对话" if self.auto_dialog_enabled else "开始自动对话")
             self.lang_action.setText("English")
             self.quit_action.setText("退出")
@@ -1724,7 +1962,7 @@ class DesktopPet(QWidget):
     def toggle_visibility_from_menu(self):
         if self.isVisible():
             self.hide()
-            self.toggle_visibility_action.setText("显示桌宠" if self.lang == 'zh' else "Show Pet")
+            self.toggle_visibility_action.setText("隐藏桌宠" if self.lang == 'zh' else "Hide Pet")
         else:
             self.show()
             self.raise_()
@@ -1850,6 +2088,8 @@ class DesktopPet(QWidget):
                 self.news_window.hide()
             elif self.midnight_window is not None and self.midnight_window.isVisible():
                 self.midnight_window.hide()
+            elif self.note_window is not None and self.note_window.isVisible():
+                self.note_window.hide()
             else:
                 self.menu.exec_(event.globalPos())
 
@@ -1932,6 +2172,44 @@ class DesktopPet(QWidget):
         if self.auto_dialog_enabled and not self.tomato_display_active and not self.is_displaying:
             self.add_dialog(random.choice(get_dialogues(self.lang, 'random')))
 
+    def show_note(self):
+        if self.note_window is None:
+            self.note_window = NoteWindow(self)
+        self.note_window.update_language(self.lang)
+        self.note_window.reload_note()
+        self.note_window.update_position()
+        self.note_window.show()
+        self.note_window.raise_()
+        self.note_window.note_edit.setFocus()
+
+    def repeat_random_note(self):
+        """每小时从 note.txt 随机抽取一句，并让角色一起复读。"""
+        self.note_repeat_elapsed += 1
+        if self.note_repeat_elapsed < 60:
+            return
+        self.note_repeat_elapsed = 0
+
+        note_text = load_notes()
+        if not note_text.strip():
+            return
+
+        # 空行作为分隔符；每一行视为一句话。若一行过长也保持完整，不截断。
+        notes = [line.strip() for line in note_text.splitlines() if line.strip()]
+        if not notes:
+            return
+
+        note_sentence = random.choice(notes)
+        role_lines = get_dialogues(self.lang, "note_repeat")
+        if not role_lines:
+            return
+
+        role_line = random.choice(role_lines)
+        if self.lang == "en":
+            message = f'You wrote: "{note_sentence}"\n\n{role_line}'
+        else:
+            message = f'你写过：" {note_sentence} "\n\n{role_line}'
+        self.add_dialog(message)
+
     def show_control_panel(self):
         if self.control_panel is None:
             self.control_panel = ControlPanel(self)
@@ -1968,6 +2246,8 @@ class DesktopPet(QWidget):
         self.animation_timer.stop()
         self.startup_timer.stop()
         self.clear_dialog_timer()
+        if hasattr(self, "note_repeat_timer"):
+            self.note_repeat_timer.stop()
         QTimer.singleShot(3000, self._really_quit)
 
     def _really_quit(self):
@@ -1977,6 +2257,10 @@ class DesktopPet(QWidget):
             self.news_window.close()
         if self.midnight_window:
             self.midnight_window.close()
+        if self.note_window:
+            self.note_window.close()
+        if hasattr(self, "note_repeat_timer"):
+            self.note_repeat_timer.stop()
         self.close()
         QApplication.quit()
 
