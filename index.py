@@ -206,12 +206,16 @@ def fetch_midnight_news(lang='zh'):
     获取午夜新闻
     - 英文模式：直接获取英文犯罪新闻
     - 中文模式：获取英文犯罪新闻并翻译为中文
+    - 本次运行中一旦筛选出新闻，后续不再重新筛选，始终使用首次筛选结果
     """
     global _midnight_cache, _midnight_cache_time
     
-    current_time = time.time()
-    if _midnight_cache is not None and (current_time - _midnight_cache_time) < CACHE_DURATION:
+    # Midnight news is filtered only once after a valid result is obtained.
+    # Once selected, keep using the same filtered news for this program run.
+    if _midnight_cache is not None:
         return _midnight_cache.copy()
+
+    current_time = time.time()
 
     try:
         # 构建请求URL（API Key放在URL中）
@@ -1509,7 +1513,7 @@ class ControlPanel(BasePanel):
         layout2.addWidget(self.drink_check, 0, 0)
         self.drink_spin = QSpinBox()
         self.drink_spin.setRange(5, 120)
-        self.drink_spin.setValue(30)
+        self.drink_spin.setValue(45)
         self.drink_spin.setSuffix(" min" if (parent and parent.lang == 'en') else " 分钟")
         self.drink_spin.setStyleSheet(f"font-size: {int(14 * self.scale)}px; background: white; color: #1a1a2c;")
         layout2.addWidget(self.drink_spin, 0, 1)
@@ -1527,7 +1531,8 @@ class ControlPanel(BasePanel):
         self.sleep_min.setRange(0, 59)
         self.sleep_min.setValue(0)
         self.sleep_min.setStyleSheet(f"font-size: {int(14 * self.scale)}px; background: white; color: #1a1a2c;")
-        sleep_h_layout.addWidget(QLabel("Time:" if (parent and parent.lang == 'en') else "时间："))
+        self.sleep_time_label = QLabel()
+        sleep_h_layout.addWidget(self.sleep_time_label)
         sleep_h_layout.addWidget(self.sleep_hour)
         sleep_h_layout.addWidget(QLabel("h" if (parent and parent.lang == 'en') else "时"))
         sleep_h_layout.addWidget(self.sleep_min)
@@ -1560,6 +1565,7 @@ class ControlPanel(BasePanel):
             self.tomato_reset_btn.setText("⟳ Reset")
             self.drink_check.setText("Drink")
             self.sleep_check.setText("Sleep")
+            self.sleep_time_label.setText("Time:")
             self.eat_label.setText("Lunch: 12:00  |  Dinner: 18:00")
             group1 = self.findChild(QGroupBox)
             if group1:
@@ -1575,6 +1581,7 @@ class ControlPanel(BasePanel):
             self.tomato_reset_btn.setText("⟳ 重置")
             self.drink_check.setText("喝水")
             self.sleep_check.setText("睡觉")
+            self.sleep_time_label.setText("时间：")
             self.eat_label.setText("午饭：12点  |  晚饭：18点")
             group1 = self.findChild(QGroupBox)
             if group1:
@@ -1692,7 +1699,7 @@ class ControlPanel(BasePanel):
                 QPushButton:pressed {{ background-color: #229954; }}
             """)
             self.parent_pet.stop_tomato_display()
-            self.parent_pet.add_dialog(random.choice(get_dialogues(self.parent_pet.lang, 'drink')), requires_confirmation=True)
+            self.parent_pet.add_dialog(random.choice(get_dialogues(self.parent_pet.lang, 'drink')), requires_confirmation=True, priority=True)
             self.update_tomato_display()
 
     def update_tomato_display(self):
@@ -1711,17 +1718,17 @@ class ControlPanel(BasePanel):
         if self.drink_check.isChecked():
             self.reminder_elapsed['喝水'] += 1
             if self.reminder_elapsed['喝水'] >= self.drink_spin.value():
-                self.parent_pet.add_dialog(random.choice(get_dialogues(self.parent_pet.lang, 'drink')), requires_confirmation=True)
+                self.parent_pet.add_dialog(random.choice(get_dialogues(self.parent_pet.lang, 'drink')), requires_confirmation=True, priority=True)
                 self.reminder_elapsed['喝水'] = 0
 
         if hour == 12 and minute == 0 and not self.lunch_triggered:
-            self.parent_pet.add_dialog(random.choice(get_dialogues(self.parent_pet.lang, 'lunch')), requires_confirmation=True)
+            self.parent_pet.add_dialog(random.choice(get_dialogues(self.parent_pet.lang, 'lunch')), requires_confirmation=True, priority=True)
             self.lunch_triggered = True
         if hour != 12:
             self.lunch_triggered = False
 
         if hour == 18 and minute == 0 and not self.dinner_triggered:
-            self.parent_pet.add_dialog(random.choice(get_dialogues(self.parent_pet.lang, 'dinner')), requires_confirmation=True)
+            self.parent_pet.add_dialog(random.choice(get_dialogues(self.parent_pet.lang, 'dinner')), requires_confirmation=True, priority=True)
             self.dinner_triggered = True
         if hour != 18:
             self.dinner_triggered = False
@@ -1730,7 +1737,7 @@ class ControlPanel(BasePanel):
             set_h = self.sleep_hour.value()
             set_m = self.sleep_min.value()
             if hour == set_h and minute == set_m and not self.sleep_triggered:
-                self.parent_pet.add_dialog(random.choice(get_dialogues(self.parent_pet.lang, 'sleep')), requires_confirmation=True)
+                self.parent_pet.add_dialog(random.choice(get_dialogues(self.parent_pet.lang, 'sleep')), requires_confirmation=True, priority=True)
                 self.sleep_triggered = True
             if hour != set_h or minute != set_m:
                 self.sleep_triggered = False
@@ -2199,12 +2206,21 @@ class DesktopPet(QWidget):
             self.dialog_timer.stop()
             self.dialog_timer = None
 
-    def add_dialog(self, text, requires_confirmation=False):
+    def add_dialog(self, text, requires_confirmation=False, priority=False):
         dialog_item = (text, requires_confirmation)
-        if self.tomato_display_active:
+
+        if priority:
+            # Scheduled reminders go to the front of the queue.
+            # IMPORTANT: do not interrupt the dialogue that is currently playing.
+            # Let the current random/ordinary dialogue finish first, then show
+            # the scheduled reminder immediately afterward.
+            self.dialog_queue.insert(0, dialog_item)
+        else:
             self.dialog_queue.append(dialog_item)
+
+        if self.tomato_display_active:
             return
-        self.dialog_queue.append(dialog_item)
+
         if not self.is_displaying:
             self.show_next_dialog()
 
@@ -2255,7 +2271,14 @@ class DesktopPet(QWidget):
         self.add_dialog(random.choice(get_dialogues(self.lang, 'flirt')))
 
     def random_dialog(self):
-        if self.auto_dialog_enabled and not self.tomato_display_active and not self.is_displaying:
+        # Random dialogue can play normally, but it never replaces an active
+        # reminder or a dialogue that is already being displayed.
+        if (
+            self.auto_dialog_enabled
+            and not self.tomato_display_active
+            and not self.is_displaying
+            and not self.current_dialog_requires_confirmation
+        ):
             self.add_dialog(random.choice(get_dialogues(self.lang, 'random')))
 
     def show_note(self):
