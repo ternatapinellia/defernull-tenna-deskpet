@@ -20,6 +20,7 @@ PREVIEW
 <img width="482" height="770" alt="屏幕截图 2026-08-26 154302" src="https://github.com/user-attachments/assets/c6f0e9be-ad18-4594-bbfe-57f1d16f0054" />
 
 https://github.com/user-attachments/assets/1976eea6-9234-41fb-9144-256ac8ccacea
+
 ——
 
 v3.0更新
