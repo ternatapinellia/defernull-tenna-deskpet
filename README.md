@@ -9,7 +9,7 @@ Left-click on the pet to trigger a dialogue. Right-click to display the menu and
 Release Links/下载链接
 https://github.com/ternatapinellia/defernull-tenna-deskpet/releases/tag/v2.1.1
 
-下载release界面zip后解压，直接双击dnt-deskpet的快捷方式便可使用。
+下载release界面zip后解压，直接双击desktoppet.exe便可使用。
 
 TIPS:作者后续可能会再度更新对话词条或增设功能，目前版本功能已经完整。
 
