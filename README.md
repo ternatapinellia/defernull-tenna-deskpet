@@ -7,9 +7,9 @@ Instructions
 Left-click on the pet to trigger a dialogue. Right-click to display the menu and exit. To exit the Control Panel and News interface, right-click on the pet as well. You can switch between Chinese and English. If you find it uncomfortable, you can pause, hide the pet, and pause auto-dialogue. This will pause timed interval dialogues and click-triggered dialogues. There are fixed-time reminders for drinking water, eating, and sleeping.The desktop pet comes with a built-in auto-start feature. If you do not need it, you can disable or enable it manually in the system settings.Right-click the menu and select **Notes** to record your daily inspirations or important events.
 
 Release Links/下载链接
-https://github.com/ternatapinellia/defernull-tenna-deskpet/releases/tag/v2.0
+https://github.com/ternatapinellia/defernull-tenna-deskpet/releases/tag/v2.1.1
 
-下载release界面zip后解压，直接双击dnt=deskpet的快捷方式便可使用。v2.0和2.0.1的区别是有误便签功能。
+下载release界面zip后解压，直接双击dnt-deskpet的快捷方式便可使用。
 
 TIPS:作者后续可能会再度更新对话词条或增设功能，目前版本功能已经完整。
 
