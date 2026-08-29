@@ -347,7 +347,7 @@ class BubbleWidget(QWidget):
         self.setFixedSize(self.bg_pixmap.size())
 
         self.label = QLabel(self)
-        self.label.setGeometry(int(130 * scale), int(85 * scale), int(350 * scale), int(200 * scale))
+        self.label.setGeometry(int(130 * scale), int(85 * scale), int(340 * scale), int(160 * scale))
         self.label.setWordWrap(True)
         self.label.setAlignment(Qt.AlignLeft | Qt.AlignTop)
         self.label.setStyleSheet("background: transparent; color: #2c3e50;")
@@ -363,6 +363,7 @@ class BubbleWidget(QWidget):
 
         self.is_typing = False
         self.is_complete = False
+        self.current_requires_confirmation = False
 
         # Reminder confirmation button for Drink / Lunch / Dinner / Sleep
         self.confirm_button = QPushButton(self)
@@ -391,8 +392,8 @@ class BubbleWidget(QWidget):
         scale = min(screen_w / 1920, screen_h / 1080)
 
         self.confirm_button.setGeometry(
-            self.width() - int(145 * scale),
-            self.height() - int(58 * scale),
+            self.width() - int(248 * scale),
+            self.height() - int(105 * scale),
             int(115 * scale),
             int(38 * scale)
         )
@@ -445,11 +446,81 @@ class BubbleWidget(QWidget):
         painter.drawPixmap(0, 0, self.bg_pixmap)
         super().paintEvent(event)
 
+    def _text_height(self, text):
+        """计算文字在当前气泡宽度下实际占用的高度。"""
+        from PyQt5.QtCore import QRect
+        fm = self.label.fontMetrics()
+        rect = fm.boundingRect(
+            QRect(0, 0, self.label.width(), 10000),
+            Qt.TextWordWrap,
+            text
+        )
+        return rect.height()
+
+    def _split_for_bubble(self, text):
+        """把超出160px高度的台词切成当前气泡可容纳的一段和剩余部分。"""
+        max_height = int(160 * getattr(self.parent(), "scale", 1.0))
+
+        if self._text_height(text) <= max_height:
+            return text, ""
+
+        # 二分查找能完整放入当前气泡的最大字符数。
+        lo, hi = 1, len(text)
+        best = 1
+        while lo <= hi:
+            mid = (lo + hi) // 2
+            candidate = text[:mid]
+            if self._text_height(candidate) <= max_height:
+                best = mid
+                lo = mid + 1
+            else:
+                hi = mid - 1
+
+        cut = best
+
+        # 英文优先在空格处切断，避免把单词拆开。
+        prefix = text[:best]
+        if " " in prefix:
+            space_pos = prefix.rfind(" ")
+            if space_pos >= max(1, best - 40):
+                cut = space_pos
+
+        # 不让手动换行符被留在下一段开头。
+        first = text[:cut].rstrip()
+        rest = text[cut:].lstrip()
+
+        if not first:
+            first = text[:best]
+            rest = text[best:]
+
+        return first, rest
+
     def type_char(self):
         if self.char_index < len(self.full_text):
             self.char_index += 1
             current_text = self.full_text[:self.char_index]
-            self.label.setText(current_text)
+
+            # 当当前气泡达到160px高度时，不继续把文字塞出气泡。
+            # 立即把剩余台词交给下一个气泡。
+            if self._text_height(current_text) > int(160 * getattr(self.parent(), "scale", 1.0)):
+                visible_text, remaining = self._split_for_bubble(self.full_text)
+
+                self.typing_timer.stop()
+                self.label.setText(visible_text)
+                self.full_text = visible_text
+                self.char_index = len(visible_text)
+                self.is_typing = False
+                self.is_complete = True
+
+                if remaining:
+                    self.parent().start_dialog_continuation(
+                        remaining,
+                        self.current_requires_confirmation
+                    )
+                else:
+                    self.parent().on_dialog_complete()
+            else:
+                self.label.setText(current_text)
         else:
             self.typing_timer.stop()
             self.is_typing = False
@@ -460,6 +531,7 @@ class BubbleWidget(QWidget):
         self.label.setFont(self.normal_font)
         self.full_text = text
         self.char_index = 0
+        self.current_requires_confirmation = requires_confirmation
         self.label.clear()
         self.is_typing = True
         self.is_complete = False
@@ -2248,6 +2320,15 @@ class DesktopPet(QWidget):
         self.dialog_timer.start(
             60000 if self.current_dialog_requires_confirmation else 3000
         )
+
+    def start_dialog_continuation(self, text, requires_confirmation=False):
+        """同一条台词超出160px后，立即继续在下一个气泡中播放剩余内容。"""
+        self.clear_dialog_timer()
+        self.is_displaying = True
+        self.current_dialog_requires_confirmation = requires_confirmation
+
+        # 下一段立即显示，不等待原来的3秒停留时间。
+        self.bubble.start_typing(text, requires_confirmation)
 
     def confirm_dialog(self):
         self.clear_dialog_timer()
