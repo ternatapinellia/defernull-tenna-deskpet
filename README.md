@@ -1,13 +1,13 @@
 使用说明
 
-左键点击桌宠对话，右键点击显示菜单和退出，进入控制面板和新闻界面和便签界面同样右键点击桌宠退出。可切换中英文，如有不适可暂停、隐藏桌宠和暂停自动对话，会暂停时间间隔性对话和点击桌宠时对话，固定时间会有喝水吃饭和睡觉提示，桌宠自带开机自启功能，如不需要可以自行去系统中关闭，或者是打开。右键菜单点击便签可以记录日常灵感或重要事件。
+左键点击桌宠对话，右键点击显示菜单和退出，进入控制面板和新闻界面和便签界面同样右键点击桌宠退出。可切换中英文，如有不适可暂停、隐藏桌宠和暂停自动对话，会暂停时间间隔性对话和点击桌宠时对话，固定时间会有喝水吃饭和睡觉提示，桌宠自带开机自启功能，如不需要可以自行去系统中关闭，或者是打开。右键菜单点击便签可以记录日常灵感或重要事件。右键可点击切换桌宠形态，形态2有7套服装。
 
 Instructions
 
 Left-click on the pet to trigger a dialogue. Right-click to display the menu and exit. To exit the Control Panel and News interface and notes panel, right-click on the pet as well. You can switch between Chinese and English. If you find it uncomfortable, you can pause, hide the pet, and pause auto-dialogue. This will pause timed interval dialogues and click-triggered dialogues. There are fixed-time reminders for drinking water, eating, and sleeping.The desktop pet comes with a built-in auto-start feature. If you do not need it, you can disable or enable it manually in the system settings.Right-click the menu and select **Notes** to record your daily inspirations or important events.
 
 Release Links/下载链接
-https://github.com/ternatapinellia/defernull-tenna-deskpet/releases/tag/v3.0
+https://github.com/ternatapinellia/defernull-tenna-deskpet/releases/tag/v4.0
 
 下载release界面zip后解压，直接双击desktoppet.exe便可使用。
 
@@ -20,6 +20,12 @@ PREVIEW
 <img width="482" height="770" alt="屏幕截图 2026-08-26 154302" src="https://github.com/user-attachments/assets/c6f0e9be-ad18-4594-bbfe-57f1d16f0054" />
 
 https://github.com/user-attachments/assets/1976eea6-9234-41fb-9144-256ac8ccacea
+
+——
+
+v4.0更新
+
+增加了桌宠的另一形态和相关服装
 
 ——
 
