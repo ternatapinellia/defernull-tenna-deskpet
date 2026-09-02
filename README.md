@@ -26,6 +26,8 @@ PREVIEW
 
 https://github.com/user-attachments/assets/1976eea6-9234-41fb-9144-256ac8ccacea
 
+Uploading 屏幕录制 2026-09-02 140800.mp4…
+
 ——
 
 v4.1更新
