@@ -8,16 +8,52 @@ import urllib.request
 import urllib.error
 import time
 import winreg
+import base64
+import re
 from PyQt5.QtWidgets import (QApplication, QWidget, QLabel, QMenu,
                              QPushButton, QGridLayout, QGroupBox,
                              QSpinBox, QCheckBox, QHBoxLayout, QAction,
                              QFrame, QVBoxLayout, QSystemTrayIcon,
                              QScrollArea, QPlainTextEdit)
-from PyQt5.QtCore import Qt, QTimer, QPropertyAnimation, QPoint, QTime, QEasingCurve
-from PyQt5.QtGui import QPixmap, QPainter, QFont, QColor, QPalette, QIcon
+from PyQt5.QtCore import Qt, QTimer, QPropertyAnimation, QPoint, QTime, QEasingCurve, QDateTime
+from PyQt5.QtGui import QPixmap, QPainter, QFont, QColor, QPalette, QIcon, QImage
 
 # 导入对话配置
-from dialogues import get_dialogues
+try:
+    from dialogues import get_dialogues
+except ImportError:
+    def get_dialogues(lang, key):
+        default = {
+            'zh': {
+                'start': ['你好呀！今天想做什么呢？'],
+                'click': ['哎呀，别戳我！', '好痒！'],
+                'flirt': ['讨厌啦~', '你好坏哦~'],
+                'drink': ['该喝水了！', '喝点水吧~'],
+                'lunch': ['该吃午饭了！', '午饭时间到！'],
+                'dinner': ['该吃晚饭了！', '晚饭时间到！'],
+                'sleep': ['该睡觉了！', '晚安~'],
+                'random': ['今天天气真好~', '你在看什么呢？'],
+                'note_saved': ['便签已保存！', '笔记已存好~'],
+                'note_error': ['便签保存失败...', '出错了...'],
+                'note_repeat': ['我记得你写过这个！', '这句话真有意思~'],
+                'close': ['真的要走了吗？', '拜拜~下次见！']
+            },
+            'en': {
+                'start': ['Hello! What do you want to do today?'],
+                'click': ['Hey, stop poking me!', 'That tickles!'],
+                'flirt': ['Oh stop~', 'You are so naughty~'],
+                'drink': ['Time to drink water!', 'Have some water~'],
+                'lunch': ['Time for lunch!', 'Lunch time!'],
+                'dinner': ['Time for dinner!', 'Dinner time!'],
+                'sleep': ['Time to sleep!', 'Good night~'],
+                'random': ['Nice weather today~', 'What are you looking at?'],
+                'note_saved': ['Note saved!', 'Note stored~'],
+                'note_error': ['Failed to save note...', 'Error...'],
+                'note_repeat': ['I remember you wrote this!', 'That is interesting~'],
+                'close': ['Are you really leaving?', 'Bye~ See you next time!']
+            }
+        }
+        return default.get(lang, default['zh']).get(key, ['...'])
 
 # ---------- APITube 配置 ----------
 APITUBE_KEY = "api_live_hXW9AASSeVaFonFfjTYd7ft604DkPc2e6uF3s0eU9pQNZWxW3gFATTG6K"
@@ -49,11 +85,9 @@ def resource_path(relative_path):
 
 # ---------- Windows 开机自启 ----------
 def set_windows_autostart(enabled=True):
-    """将桌宠加入/移出当前 Windows 用户的开机启动。"""
     try:
         run_key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
         app_name = "DNTDesktopPet"
-
         with winreg.OpenKey(
             winreg.HKEY_CURRENT_USER,
             run_key_path,
@@ -61,14 +95,11 @@ def set_windows_autostart(enabled=True):
             winreg.KEY_SET_VALUE | winreg.KEY_QUERY_VALUE
         ) as key:
             if enabled:
-                # .py 运行时使用 pythonw.exe，避免开机启动时弹出黑色命令行窗口；
-                # PyInstaller 打包成 exe 时则直接使用 exe。
                 executable = sys.executable
                 if executable.lower().endswith("python.exe"):
                     pythonw = os.path.join(os.path.dirname(executable), "pythonw.exe")
                     if os.path.exists(pythonw):
                         executable = pythonw
-
                 script_path = os.path.abspath(sys.argv[0])
                 command = f'"{executable}" "{script_path}"'
                 winreg.SetValueEx(key, app_name, 0, winreg.REG_SZ, command)
@@ -79,7 +110,6 @@ def set_windows_autostart(enabled=True):
                     pass
     except Exception as e:
         print(f"设置 Windows 开机自启失败: {e}")
-
 
 # ---------- 获取屏幕尺寸 ----------
 def get_screen_size():
@@ -93,11 +123,15 @@ def get_screen_size():
     return (geometry.width(), geometry.height())
 
 # ---------- 新闻数据缓存 ----------
-_news_cache = None
-_cache_time = 0
+_news_cache_zh = None
+_news_cache_en = None
+_cache_time_zh = 0
+_cache_time_en = 0
 CACHE_DURATION = 600
-_midnight_cache = None
-_midnight_cache_time = 0
+_midnight_cache_zh = None
+_midnight_cache_en = None
+_midnight_cache_time_zh = 0
+_midnight_cache_time_en = 0
 
 # ---------- 翻译函数 ----------
 def translate_to_chinese(text):
@@ -114,11 +148,11 @@ def translate_to_chinese(text):
 
 # ---------- 中文新闻API ----------
 def fetch_news_zh():
-    """获取中文新闻"""
-    global _news_cache, _cache_time
+    """获取中文今日新闻，并使用独立中文缓存。"""
+    global _news_cache_zh, _cache_time_zh
     current_time = time.time()
-    if _news_cache is not None and (current_time - _cache_time) < CACHE_DURATION:
-        return _news_cache.copy()
+    if _news_cache_zh is not None and (current_time - _cache_time_zh) < CACHE_DURATION:
+        return _news_cache_zh.copy()
 
     apis = [
         {
@@ -167,7 +201,7 @@ def fetch_news_zh():
                 data = json.loads(response.read().decode('utf-8'))
                 news_list = api["parser"](data)
                 if news_list and len(news_list) > 0:
-                    print(f"成功从 {api['url']} 获取新闻，共 {len(news_list)} 条")
+                    print(f"成功从 {api['url']} 获取中文新闻，共 {len(news_list)} 条")
                     raw_news = news_list
                     break
         except Exception as e:
@@ -177,13 +211,18 @@ def fetch_news_zh():
     if not raw_news:
         return None
 
-    _news_cache = raw_news
-    _cache_time = current_time
-    return raw_news
+    _news_cache_zh = raw_news
+    _cache_time_zh = current_time
+    return raw_news.copy()
 
 # ---------- 英文新闻API (APITube - 使用urllib) ----------
 def fetch_news_en():
-    """获取英文今日新闻（调用午夜新闻API，但不进行关键词筛选）"""
+    """获取英文今日新闻；英文缓存与中文完全分离。"""
+    global _news_cache_en, _cache_time_en
+    current_time = time.time()
+    if _news_cache_en is not None and (current_time - _cache_time_en) < CACHE_DURATION:
+        return _news_cache_en.copy()
+
     try:
         url = f"{APITUBE_BASE_URL}?api_key={APITUBE_KEY}&language.code=en&per_page=10"
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
@@ -192,10 +231,15 @@ def fetch_news_en():
             if data.get("status") == "ok":
                 articles = data.get("results", [])
                 if articles:
-                    return [
+                    news = [
                         {"title": article.get("title", ""), "url": article.get("href", "#")}
                         for article in articles if article.get("title")
                     ]
+                    if news:
+                        _news_cache_en = news
+                        _cache_time_en = current_time
+                        print(f"APITube 获取英文新闻，共 {len(news)} 条")
+                        return news.copy()
     except Exception as e:
         print(f"英文新闻获取失败: {e}")
     return None
@@ -203,22 +247,23 @@ def fetch_news_en():
 # ---------- 午夜新闻（统一接口，支持中英文 - 纯urllib） ----------
 def fetch_midnight_news(lang='zh'):
     """
-    获取午夜新闻
-    - 英文模式：直接获取英文犯罪新闻
-    - 中文模式：获取英文犯罪新闻并翻译为中文
-    - 本次运行中一旦筛选出新闻，后续不再重新筛选，始终使用首次筛选结果
+    获取午夜新闻。
+    中文和英文使用完全独立的缓存：
+    - 英文：直接显示 APITube 英文犯罪新闻
+    - 中文：对筛选后的英文犯罪新闻逐条翻译
+    同一种语言首次得到有效结果后，本次运行内保持该语言自己的结果。
     """
-    global _midnight_cache, _midnight_cache_time
-    
-    # Midnight news is filtered only once after a valid result is obtained.
-    # Once selected, keep using the same filtered news for this program run.
-    if _midnight_cache is not None:
-        return _midnight_cache.copy()
+    global _midnight_cache_zh, _midnight_cache_en
+    global _midnight_cache_time_zh, _midnight_cache_time_en
+
+    is_en = (lang == 'en')
+    if is_en and _midnight_cache_en is not None:
+        return _midnight_cache_en.copy()
+    if not is_en and _midnight_cache_zh is not None:
+        return _midnight_cache_zh.copy()
 
     current_time = time.time()
-
     try:
-        # 构建请求URL（API Key放在URL中）
         url = f"{APITUBE_BASE_URL}?api_key={APITUBE_KEY}&language.code=en&per_page=10"
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
         with urllib.request.urlopen(req, timeout=15) as response:
@@ -226,48 +271,43 @@ def fetch_midnight_news(lang='zh'):
             if data.get("status") == "ok":
                 articles = data.get("results", [])
                 if articles:
-                    # 筛选包含犯罪关键词的新闻
                     filtered_news = []
                     for article in articles:
                         title = article.get("title", "")
-                        # 检查标题是否包含任何犯罪关键词
                         if any(keyword.lower() in title.lower() for keyword in MIDNIGHT_KEYWORDS):
                             filtered_news.append({
                                 "title": title,
                                 "url": article.get("href", "#")
                             })
-                    
+
                     print(f"APITube 获取到 {len(articles)} 条新闻，筛选后保留 {len(filtered_news)} 条犯罪新闻")
-                    
+
                     if filtered_news:
-                        # 如果是中文模式，需要翻译
-                        if lang == 'zh':
-                            print("正在翻译新闻标题...")
-                            translated_news = []
-                            for item in filtered_news:
-                                translated_title = translate_to_chinese(item["title"])
-                                translated_news.append({
-                                    "title": translated_title,
-                                    "url": item["url"]
-                                })
-                            _midnight_cache = translated_news
-                        else:
-                            # 英文模式直接使用
-                            _midnight_cache = filtered_news
-                        
-                        _midnight_cache_time = current_time
-                        return _midnight_cache.copy()
-                    else:
-                        print("没有找到匹配的犯罪新闻，将使用默认午夜新闻")
-                        return get_default_midnight_news(lang)
+                        if is_en:
+                            result = filtered_news
+                            _midnight_cache_en = result
+                            _midnight_cache_time_en = current_time
+                            return result.copy()
+
+                        print("正在翻译中文午夜新闻标题...")
+                        translated_news = []
+                        for item in filtered_news:
+                            translated_news.append({
+                                "title": translate_to_chinese(item["title"]),
+                                "url": item["url"]
+                            })
+                        _midnight_cache_zh = translated_news
+                        _midnight_cache_time_zh = current_time
+                        return translated_news.copy()
+
+                    print("没有找到匹配的犯罪新闻，将使用默认午夜新闻")
                 else:
                     print("APITube 返回空结果，将使用默认午夜新闻")
             else:
                 print(f"APITube 返回错误: {data.get('message', '未知错误')}")
     except Exception as e:
         print(f"午夜新闻获取失败: {e}")
-    
-    # API失败、无数据时使用默认新闻
+
     return get_default_midnight_news(lang)
 
 def get_default_midnight_news(lang='zh'):
@@ -298,12 +338,9 @@ def fetch_news(lang='zh'):
 
 # ---------- 便签文件 ----------
 def get_note_path():
-    """便签始终保存到桌宠程序（.py/.exe）所在目录下的 note.txt。"""
     return os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), "note.txt")
 
-
 def load_notes():
-    """读取 note.txt，返回完整文本。"""
     path = get_note_path()
     try:
         if not os.path.exists(path):
@@ -316,9 +353,7 @@ def load_notes():
         print(f"读取便签失败: {e}")
         return ""
 
-
 def save_notes(text):
-    """覆盖保存完整便签内容。"""
     path = get_note_path()
     try:
         with open(path, "w", encoding="utf-8") as f:
@@ -363,9 +398,7 @@ class BubbleWidget(QWidget):
 
         self.is_typing = False
         self.is_complete = False
-        self.current_requires_confirmation = False
 
-        # Reminder confirmation button for Drink / Lunch / Dinner / Sleep
         self.confirm_button = QPushButton(self)
         self.confirm_button.setCursor(Qt.PointingHandCursor)
         self.confirm_button.clicked.connect(self._confirm_clicked)
@@ -387,10 +420,8 @@ class BubbleWidget(QWidget):
     def _update_confirm_button_style(self):
         lang = getattr(self.parent(), "lang", "zh")
         self.confirm_button.setText("Confirm" if lang == "en" else "确认")
-
         screen_w, screen_h = get_screen_size()
         scale = min(screen_w / 1920, screen_h / 1080)
-
         self.confirm_button.setGeometry(
             self.width() - int(248 * scale),
             self.height() - int(105 * scale),
@@ -428,9 +459,10 @@ class BubbleWidget(QWidget):
             self.parent().confirm_dialog()
 
     def _confirm_timeout(self):
+        # 提醒超过1分钟未确认：先消失，稍后再次提醒。
         self.hide_confirmation_button()
         if self.parent() is not None:
-            self.parent().confirm_dialog()
+            self.parent().reminder_dialog_timeout()
 
     def move_to_bottom_right(self):
         screen_w, screen_h = get_screen_size()
@@ -447,76 +479,54 @@ class BubbleWidget(QWidget):
         super().paintEvent(event)
 
     def _text_height(self, text):
-        """计算文字在当前气泡宽度下实际占用的高度。"""
-        from PyQt5.QtCore import QRect
         fm = self.label.fontMetrics()
-        rect = fm.boundingRect(
-            QRect(0, 0, self.label.width(), 10000),
-            Qt.TextWordWrap,
-            text
-        )
+        rect = fm.boundingRect(0, 0, self.label.width(), 10000, Qt.TextWordWrap, text)
         return rect.height()
 
     def _split_for_bubble(self, text):
-        """把超出160px高度的台词切成当前气泡可容纳的一段和剩余部分。"""
         max_height = int(160 * getattr(self.parent(), "scale", 1.0))
-
         if self._text_height(text) <= max_height:
             return text, ""
 
-        # 二分查找能完整放入当前气泡的最大字符数。
-        lo, hi = 1, len(text)
+        low, high = 1, len(text)
         best = 1
-        while lo <= hi:
-            mid = (lo + hi) // 2
-            candidate = text[:mid]
-            if self._text_height(candidate) <= max_height:
+        while low <= high:
+            mid = (low + high) // 2
+            part = text[:mid].rstrip()
+            if self._text_height(part) <= max_height:
                 best = mid
-                lo = mid + 1
+                low = mid + 1
             else:
-                hi = mid - 1
+                high = mid - 1
 
         cut = best
-
-        # 英文优先在空格处切断，避免把单词拆开。
         prefix = text[:best]
         if " " in prefix:
             space_pos = prefix.rfind(" ")
             if space_pos >= max(1, best - 40):
                 cut = space_pos
 
-        # 不让手动换行符被留在下一段开头。
         first = text[:cut].rstrip()
         rest = text[cut:].lstrip()
-
         if not first:
             first = text[:best]
             rest = text[best:]
-
         return first, rest
 
     def type_char(self):
         if self.char_index < len(self.full_text):
             self.char_index += 1
             current_text = self.full_text[:self.char_index]
-
-            # 当当前气泡达到160px高度时，不继续把文字塞出气泡。
-            # 立即把剩余台词交给下一个气泡。
             if self._text_height(current_text) > int(160 * getattr(self.parent(), "scale", 1.0)):
                 visible_text, remaining = self._split_for_bubble(self.full_text)
-
                 self.typing_timer.stop()
                 self.label.setText(visible_text)
                 self.full_text = visible_text
                 self.char_index = len(visible_text)
                 self.is_typing = False
                 self.is_complete = True
-
                 if remaining:
-                    self.parent().start_dialog_continuation(
-                        remaining,
-                        self.current_requires_confirmation
-                    )
+                    self.parent().start_dialog_continuation(remaining, self.current_requires_confirmation)
                 else:
                     self.parent().on_dialog_complete()
             else:
@@ -531,7 +541,6 @@ class BubbleWidget(QWidget):
         self.label.setFont(self.normal_font)
         self.full_text = text
         self.char_index = 0
-        self.current_requires_confirmation = requires_confirmation
         self.label.clear()
         self.is_typing = True
         self.is_complete = False
@@ -566,6 +575,7 @@ class BubbleWidget(QWidget):
         self.hide_confirmation_button()
         self.fade_animation.stop()
         self.hide()
+
 
 # ---------- 基础面板类 ----------
 class BasePanel(QWidget):
@@ -626,6 +636,7 @@ class BasePanel(QWidget):
                 self._fixed_y = panel_y
                 self._position_fixed = True
             self.move(self._fixed_x, self._fixed_y)
+
 
 # ---------- 新闻窗口 ----------
 class NewsWindow(BasePanel):
@@ -798,9 +809,11 @@ class NewsWindow(BasePanel):
             self.refresh_btn.setToolTip("刷新新闻")
 
     def refresh_news(self):
-        global _news_cache, _cache_time
-        _news_cache = None
-        _cache_time = 0
+        global _news_cache_zh, _news_cache_en, _cache_time_zh, _cache_time_en
+        _news_cache_zh = None
+        _news_cache_en = None
+        _cache_time_zh = 0
+        _cache_time_en = 0
         self.is_loading = False
         self.fetch_news()
 
@@ -976,6 +989,7 @@ class NewsWindow(BasePanel):
             self.current_page -= 1
             self.show_page()
 
+
 # ---------- 午夜新闻窗口 ----------
 class MidnightNewsWindow(BasePanel):
     def __init__(self, parent=None):
@@ -1147,9 +1161,12 @@ class MidnightNewsWindow(BasePanel):
             self.refresh_btn.setToolTip("刷新午夜新闻")
 
     def refresh_news(self):
-        global _midnight_cache, _midnight_cache_time
-        _midnight_cache = None
-        _midnight_cache_time = 0
+        global _midnight_cache_zh, _midnight_cache_en
+        global _midnight_cache_time_zh, _midnight_cache_time_en
+        _midnight_cache_zh = None
+        _midnight_cache_en = None
+        _midnight_cache_time_zh = 0
+        _midnight_cache_time_en = 0
         self.is_loading = False
         self.fetch_news()
 
@@ -1315,10 +1332,9 @@ class MidnightNewsWindow(BasePanel):
             self.current_page -= 1
             self.show_page()
 
+
 # ---------- 便签窗口 ----------
 class NoteWindow(BasePanel):
-    """可编辑、可上下滚动并持久化到 note.txt 的便签。"""
-
     def __init__(self, parent=None):
         super().__init__(parent, panel_type="note")
 
@@ -1427,7 +1443,6 @@ class NoteWindow(BasePanel):
         self.reload_note()
 
     def reload_note(self):
-        """每次打开前重新读取，确保显示 note.txt 当前的完整内容。"""
         self.note_edit.setPlainText(load_notes())
         self.note_edit.moveCursor(self.note_edit.textCursor().End)
         self.note_edit.verticalScrollBar().setValue(
@@ -1466,6 +1481,7 @@ class NoteWindow(BasePanel):
             self.save_btn.setText("保存")
             self.clear_btn.setText("清空")
             self.close_btn.setToolTip("关闭")
+
 
 # ---------- 控制面板 ----------
 class ControlPanel(BasePanel):
@@ -1603,7 +1619,7 @@ class ControlPanel(BasePanel):
         self.sleep_min.setRange(0, 59)
         self.sleep_min.setValue(0)
         self.sleep_min.setStyleSheet(f"font-size: {int(14 * self.scale)}px; background: white; color: #1a1a2c;")
-        self.sleep_time_label = QLabel()
+        self.sleep_time_label = QLabel("Time:" if (parent and parent.lang == 'en') else "时间：")
         sleep_h_layout.addWidget(self.sleep_time_label)
         sleep_h_layout.addWidget(self.sleep_hour)
         sleep_h_layout.addWidget(QLabel("h" if (parent and parent.lang == 'en') else "时"))
@@ -1631,13 +1647,13 @@ class ControlPanel(BasePanel):
     def update_language(self, lang):
         if lang == 'en':
             self.title_label.setText("Control Panel")
+            self.sleep_time_label.setText("Time:")
             self.tomato_label.setText("")
             self.tomato_spin_label.setText("Set Duration:")
             self.tomato_btn.setText("▶ Start")
             self.tomato_reset_btn.setText("⟳ Reset")
             self.drink_check.setText("Drink")
             self.sleep_check.setText("Sleep")
-            self.sleep_time_label.setText("Time:")
             self.eat_label.setText("Lunch: 12:00  |  Dinner: 18:00")
             group1 = self.findChild(QGroupBox)
             if group1:
@@ -1647,13 +1663,13 @@ class ControlPanel(BasePanel):
                 groups[1].setTitle("Reminders")
         else:
             self.title_label.setText("控制面板")
+            self.sleep_time_label.setText("时间：")
             self.tomato_label.setText("")
             self.tomato_spin_label.setText("设置时长：")
             self.tomato_btn.setText("▶ 开始")
             self.tomato_reset_btn.setText("⟳ 重置")
             self.drink_check.setText("喝水")
             self.sleep_check.setText("睡觉")
-            self.sleep_time_label.setText("时间：")
             self.eat_label.setText("午饭：12点  |  晚饭：18点")
             group1 = self.findChild(QGroupBox)
             if group1:
@@ -1771,7 +1787,7 @@ class ControlPanel(BasePanel):
                 QPushButton:pressed {{ background-color: #229954; }}
             """)
             self.parent_pet.stop_tomato_display()
-            self.parent_pet.add_dialog(random.choice(get_dialogues(self.parent_pet.lang, 'drink')), requires_confirmation=True, priority=True)
+            self.parent_pet.add_reminder_dialog('drink', 'drink')
             self.update_tomato_display()
 
     def update_tomato_display(self):
@@ -1789,18 +1805,19 @@ class ControlPanel(BasePanel):
 
         if self.drink_check.isChecked():
             self.reminder_elapsed['喝水'] += 1
-            if self.reminder_elapsed['喝水'] >= self.drink_spin.value():
-                self.parent_pet.add_dialog(random.choice(get_dialogues(self.parent_pet.lang, 'drink')), requires_confirmation=True, priority=True)
+            if (self.reminder_elapsed['喝水'] >= self.drink_spin.value() and
+                    not self.parent_pet.is_reminder_pending('drink')):
+                self.parent_pet.add_reminder_dialog('drink', 'drink')
                 self.reminder_elapsed['喝水'] = 0
 
-        if hour == 12 and minute == 0 and not self.lunch_triggered:
-            self.parent_pet.add_dialog(random.choice(get_dialogues(self.parent_pet.lang, 'lunch')), requires_confirmation=True, priority=True)
+        if hour == 12 and minute == 0 and not self.lunch_triggered and not self.parent_pet.is_reminder_pending('lunch'):
+            self.parent_pet.add_reminder_dialog('lunch', 'lunch')
             self.lunch_triggered = True
         if hour != 12:
             self.lunch_triggered = False
 
-        if hour == 18 and minute == 0 and not self.dinner_triggered:
-            self.parent_pet.add_dialog(random.choice(get_dialogues(self.parent_pet.lang, 'dinner')), requires_confirmation=True, priority=True)
+        if hour == 18 and minute == 0 and not self.parent_pet.is_reminder_pending('dinner') and not self.dinner_triggered:
+            self.parent_pet.add_reminder_dialog('dinner', 'dinner')
             self.dinner_triggered = True
         if hour != 18:
             self.dinner_triggered = False
@@ -1808,11 +1825,12 @@ class ControlPanel(BasePanel):
         if self.sleep_check.isChecked():
             set_h = self.sleep_hour.value()
             set_m = self.sleep_min.value()
-            if hour == set_h and minute == set_m and not self.sleep_triggered:
-                self.parent_pet.add_dialog(random.choice(get_dialogues(self.parent_pet.lang, 'sleep')), requires_confirmation=True, priority=True)
+            if hour == set_h and minute == set_m and not self.sleep_triggered and not self.parent_pet.is_reminder_pending('sleep'):
+                self.parent_pet.add_reminder_dialog('sleep', 'sleep')
                 self.sleep_triggered = True
             if hour != set_h or minute != set_m:
                 self.sleep_triggered = False
+
 
 # ---------- 带淡入淡出的QLabel ----------
 class FadeLabel(QLabel):
@@ -1873,13 +1891,535 @@ class FadeLabel(QLabel):
                 pass
             self.opacity_effect.start()
 
-# ---------- 主窗口 ----------
+
+# ---------- DNT .save 角色系统 ----------
+_DNT_RENDERER = None
+_DNT_BOUNCE_CONFIG = {}
+
+# 第7套服装专用图层标识
+OUTFIT7_HEAD_ANTENNA_KEYWORDS = ['脑袋+天线', 'dnt-脑袋+天线', 'dnt-脑袋+天线.png']
+OUTFIT7_MOUTH_KEYWORDS = ['嘴巴闭合2', 'dnt-嘴巴闭合2', 'spritesheet红']
+OUTFIT7_BLACK_SCREEN_KEYWORDS = ['黑屏红', 'dnt-黑屏红']
+OUTFIT1_6_BLACK_SCREEN_KEYWORDS = ['黑屏蓝', 'dnt-黑屏蓝']
+
+
+class DNTRoleRenderer:
+    def __init__(self):
+        self.objects = []
+        self.outfits = {}
+        self.outfit_count = 7
+        self.canvas_size = None
+
+    def get_outfit_sprites(self, outfit_no):
+        """获取指定服装的所有原始精灵数据"""
+        result = []
+        for obj in self.objects:
+            if self._belongs_to_outfit(obj, outfit_no):
+                result.append(obj)
+        return result
+
+    @staticmethod
+    def _parse_layers(value):
+        if isinstance(value, (list, tuple)):
+            return list(value)
+        if isinstance(value, str):
+            try:
+                value = json.loads(value)
+                if isinstance(value, list):
+                    return value
+            except Exception:
+                pass
+            try:
+                import ast
+                value = ast.literal_eval(value)
+                if isinstance(value, (list, tuple)):
+                    return list(value)
+            except Exception:
+                pass
+        return []
+
+    @staticmethod
+    def _truthy_layer(value):
+        try:
+            return int(value or 0) != 0
+        except Exception:
+            return str(value).strip().lower() not in ('', '0', '0.0', 'false', 'none', 'null')
+
+    @staticmethod
+    def _decode(data):
+        try:
+            if not data:
+                return QPixmap()
+            if ',' in data:
+                data = data.split(',', 1)[1]
+            raw = base64.b64decode(data)
+            image = QImage.fromData(raw, 'PNG')
+            if image.isNull():
+                return QPixmap()
+            return QPixmap.fromImage(image)
+        except Exception:
+            return QPixmap()
+
+    @staticmethod
+    def _frame(pixmap, index, count):
+        if pixmap is None or pixmap.isNull():
+            return QPixmap()
+        count = max(1, int(count or 1))
+        if count == 1:
+            return pixmap
+        fw = pixmap.width() // count
+        if fw <= 0:
+            return pixmap
+        index %= count
+        return pixmap.copy(index * fw, 0, fw, pixmap.height())
+
+    @staticmethod
+    def _vector(value):
+        if isinstance(value, (list, tuple)) and len(value) >= 2:
+            try:
+                return float(value[0]), float(value[1])
+            except Exception:
+                return 0.0, 0.0
+        if isinstance(value, str):
+            m = re.search(r'Vector2\(([-+0-9.eE]+),\s*([-+0-9.eE]+)\)', value)
+            if m:
+                return float(m.group(1)), float(m.group(2))
+        return 0.0, 0.0
+
+    def _path_text(self, obj):
+        return (str(obj.get('path', '')) + ' ' + str(obj.get('name', '')) + ' ' + str(obj.get('title', ''))).lower()
+
+    def _talk_mode(self, obj):
+        try:
+            return int(obj.get('showTalk', 0) or 0)
+        except Exception:
+            s = str(obj.get('showTalk', '')).strip().lower()
+            if s in ('1', 'closed', 'close', 'mouth_closed'):
+                return 1
+            if s in ('2', 'open', 'talk', 'mouth_open'):
+                return 2
+            return 0
+
+    def _is_head(self, obj):
+        p = self._path_text(obj)
+        return any(k in p for k in ('脑袋', '脑', '头部', '头.png', 'head.png', 'head_', '_head', '/head', '\\head'))
+
+    def _is_antenna(self, obj):
+        p = self._path_text(obj)
+        return any(k in p for k in ('天线', 'antenna', 'antennae'))
+
+    def _is_mouth(self, obj):
+        p = self._path_text(obj)
+        return self._talk_mode(obj) in (1, 2) or any(k in p for k in ('嘴巴', '嘴', 'mouth', 'lip', 'lips'))
+
+    def _is_base_character(self, obj):
+        return self._is_head(obj) or self._is_antenna(obj) or self._is_mouth(obj)
+
+    def _is_cloak(self, obj):
+        p = self._path_text(obj)
+        return '斗篷' in p or 'cloak' in p
+
+    def _is_outfit7_head_antenna(self, obj):
+        """检查是否是第7套的'脑袋+天线'组合图层"""
+        p = self._path_text(obj)
+        for keyword in OUTFIT7_HEAD_ANTENNA_KEYWORDS:
+            if keyword.lower() in p:
+                return True
+        return False
+
+    def _is_outfit7_mouth(self, obj):
+        """检查是否是第7套的嘴巴图层（包含spritesheet红）"""
+        p = self._path_text(obj)
+        for keyword in OUTFIT7_MOUTH_KEYWORDS:
+            if keyword.lower() in p:
+                return True
+        return False
+
+    def _is_outfit7_black_screen(self, obj):
+        """检查是否是第7套的黑屏图层"""
+        p = self._path_text(obj)
+        for keyword in OUTFIT7_BLACK_SCREEN_KEYWORDS:
+            if keyword.lower() in p:
+                return True
+        return False
+
+    def _is_outfit1_6_black_screen(self, obj):
+        """检查是否是1-6套的黑屏图层"""
+        p = self._path_text(obj)
+        for keyword in OUTFIT1_6_BLACK_SCREEN_KEYWORDS:
+            if keyword.lower() in p:
+                return True
+        return False
+
+    def _explicit_outfit(self, obj):
+        p = self._path_text(obj)
+        if any(k in p for k in ('帽子', 'hat', 'headwear')):
+            return 5
+        if self._is_cloak(obj):
+            return 4
+        patterns = (
+            r'(?:服装|衣服|身体|outfit|costume|body)[\s_\-\[\]\(\)]*(?:第)?([1-7])(?:套)?',
+            r'(?:第)([1-7])(?:套)?',
+        )
+        for pattern in patterns:
+            m = re.search(pattern, p)
+            if m:
+                n = int(m.group(1))
+                if 1 <= n <= 7:
+                    return n
+        return None
+
+    def _belongs_to_outfit(self, obj, outfit_no):
+        p = self._path_text(obj)
+
+        # 黑屏是“独立叠加层”，不能参与普通闭嘴/张嘴合成。
+        # 黑屏显示时会在 DesktopPet 中叠加到已经完整合成的角色上。
+        if self._is_outfit7_black_screen(obj) or self._is_outfit1_6_black_screen(obj):
+            return False
+
+        # 第7套的“脑袋+天线”组合图层只属于第7套
+        if self._is_outfit7_head_antenna(obj):
+            return outfit_no == 7
+
+        # 第7套专属嘴巴只属于第7套
+        if self._is_outfit7_mouth(obj):
+            return outfit_no == 7
+
+        # 普通嘴巴属于1-6套。
+        # dnt.save 中1-6套各自保存了一份相同的“嘴巴闭合”图片，
+        # 但它们的 showTalk / pos 并不完全一致；不能把其中任意一份
+        # 同时当成所有1-6套的 normal layer，否则 open[1]/open[2]
+        # 合成时会把闭嘴图层一起留在张嘴图层下面，形成“最后一帧叠加”。
+        if '嘴巴闭合' in p and '嘴巴闭合2' not in p:
+            regular_mouths = [
+                item for item in self.objects
+                if '嘴巴闭合' in self._path_text(item)
+                and '嘴巴闭合2' not in self._path_text(item)
+                and not self._is_outfit7_mouth(item)
+            ]
+            if 1 <= outfit_no <= 6:
+                try:
+                    return obj is regular_mouths[outfit_no - 1]
+                except IndexError:
+                    return False
+            return False
+
+        # 基础角色部件（脑袋、天线）
+        if self._is_head(obj) or self._is_antenna(obj):
+            # 第7套使用组合图层，不使用独立的脑袋和天线
+            if outfit_no == 7:
+                return False
+            return True
+
+        explicit = self._explicit_outfit(obj)
+        if explicit is not None:
+            return explicit == outfit_no
+
+        # 张嘴图层有些 save 版本没有写正确的 costumeLayers / outfit 标记。
+        # 1-6 套的张嘴素材本身相同，因此在没有显式套装信息时，
+        # 按 save 中1-6套张嘴图层的出现顺序进行对应。
+        if self._talk_mode(obj) == 2 and 1 <= outfit_no <= 6:
+            open_mouths = [
+                item for item in self.objects
+                if self._talk_mode(item) == 2
+                and not self._is_outfit7_mouth(item)
+            ]
+            try:
+                return obj is open_mouths[outfit_no - 1]
+            except IndexError:
+                pass
+
+        layers = self._parse_layers(obj.get('costumeLayers'))
+        if not layers:
+            return False
+        active = [i for i, value in enumerate(layers) if self._truthy_layer(value)]
+        if not active:
+            return True
+        if outfit_no == 7:
+            return any(slot >= 12 for slot in active)
+        if outfit_no == 6:
+            return any(slot >= 10 for slot in active)
+        return any((slot // 2) + 1 == outfit_no for slot in active)
+
+    def _get_black_screen_obj(self, outfit_no):
+        """
+        返回当前套装真正对应的黑屏对象。
+
+        dnt.save 中1-6套的蓝色黑屏各自保存了不同的 pos：
+        它们不能再像旧代码一样“找到第一个黑屏就使用”，否则
+        第2-6套会全部错误使用第1套的定位。
+        当前 save 的对象顺序正好对应：
+            蓝色黑屏第1个 -> outfit 1
+            蓝色黑屏第2个 -> outfit 2
+            ...
+            蓝色黑屏第6个 -> outfit 6
+            红色黑屏 -> outfit 7
+        """
+        try:
+            outfit_no = int(outfit_no)
+        except Exception:
+            return None
+
+        if 1 <= outfit_no <= 6:
+            blue = [
+                obj for obj in self.objects
+                if self._is_outfit1_6_black_screen(obj)
+            ]
+            return blue[outfit_no - 1] if outfit_no - 1 < len(blue) else None
+
+        if outfit_no == 7:
+            red = [
+                obj for obj in self.objects
+                if self._is_outfit7_black_screen(obj)
+            ]
+            return red[0] if red else None
+
+        return None
+
+    def _layer_sort_key(self, obj):
+        p = self._path_text(obj)
+        # 第7套的"脑袋+天线"组合图层放在较高层级
+        if self._is_outfit7_head_antenna(obj):
+            return (1000, int(obj.get('zindex', 0) or 0), obj.get('_order', 0))
+        if self._is_head(obj) or self._is_antenna(obj):
+            return (1000, int(obj.get('zindex', 0) or 0), obj.get('_order', 0))
+        if self._is_mouth(obj):
+            return (1100, int(obj.get('zindex', 0) or 0), obj.get('_order', 0))
+        if self._is_cloak(obj):
+            return (-2000, int(obj.get('zindex', 0) or 0), obj.get('_order', 0))
+        return (0, int(obj.get('zindex', 0) or 0), obj.get('_order', 0))
+
+    def _make_canvas_size(self):
+        w = h = 1
+        for obj in self.objects:
+            pm = obj.get('pixmap')
+            if pm is not None and not pm.isNull():
+                w = max(w, pm.width())
+                h = max(h, pm.height())
+        self.canvas_size = (w, h)
+
+    def _dedupe_layers(self, layers):
+        result = []
+        seen = set()
+        for obj in layers:
+            data = obj.get('imageData', '')
+            if data:
+                key = data
+            else:
+                key = (obj.get('_order'), obj.get('path'), obj.get('name'))
+            if key in seen:
+                continue
+            seen.add(key)
+            result.append(obj)
+        return sorted(result, key=self._layer_sort_key)
+
+    def _compose(self, layers, frame_index):
+        w, h = self.canvas_size
+        image = QImage(w, h, QImage.Format_ARGB32_Premultiplied)
+        image.fill(Qt.transparent)
+        painter = QPainter(image)
+        for obj in self._dedupe_layers(layers):
+            pm = obj.get('pixmap')
+            if pm is None or pm.isNull():
+                continue
+            frame = self._frame(pm, frame_index, max(1, int(obj.get('frames', 1) or 1)))
+            painter.drawPixmap(0, 0, frame)
+        painter.end()
+        return QPixmap.fromImage(image)
+
+    def _build_outfit(self, outfit_no):
+        selected = [obj for obj in self.objects if self._belongs_to_outfit(obj, outfit_no)]
+        if not selected:
+            return None
+
+        # 黑屏已经被明确排除在 selected 之外。
+        # 这样正常状态下不会一直带着黑屏；黑屏触发时单独叠加。
+        # 1-6套的“嘴巴闭合”是闭嘴专用层，即使 save 中某一份
+        # 的 showTalk 被写成 0，也绝不能把它放进 normal；否则
+        # open_sources = normal + opened 时，闭嘴嘴巴会留在 open[1]/open[2]
+        # 的底下，最终看起来像“第三帧叠加了前一帧”。
+        def is_regular_mouth(obj):
+            p = self._path_text(obj)
+            return (
+                '嘴巴闭合' in p
+                and '嘴巴闭合2' not in p
+                and not self._is_outfit7_mouth(obj)
+            )
+
+        normal = [
+            obj for obj in selected
+            if self._talk_mode(obj) == 0 and not is_regular_mouth(obj)
+        ]
+        closed = [
+            obj for obj in selected
+            if self._talk_mode(obj) == 1 or is_regular_mouth(obj)
+        ]
+        opened = [obj for obj in selected if self._talk_mode(obj) == 2]
+
+        closed_sources = normal + closed
+        if not closed_sources:
+            closed_sources = selected
+        open_sources = normal + opened
+
+        closed_count = max(
+            [int(obj.get('frames', 1) or 1) for obj in closed_sources] or [1]
+        )
+        mouth_count = max(
+            [int(obj.get('frames', 1) or 1) for obj in opened] or [0]
+        )
+
+        closed_frames = [
+            self._compose(closed_sources, i) for i in range(closed_count)
+        ]
+
+        open_frames = []
+        if opened:
+            open_frames = [
+                self._compose(open_sources, i) for i in range(mouth_count)
+            ]
+
+        speed_candidates = [
+            float(obj.get('animSpeed', 0) or 0)
+            for obj in normal
+            if float(obj.get('animSpeed', 0) or 0) > 0
+        ]
+        anim_speed = max(speed_candidates) if speed_candidates else 0.0
+
+        bounce_layers = normal
+
+        def max_abs(field):
+            return max(
+                [abs(float(obj.get(field, 0) or 0)) for obj in bounce_layers]
+                or [0.0]
+            )
+
+        def first_nonzero(field):
+            for obj in bounce_layers:
+                v = float(obj.get(field, 0) or 0)
+                if v:
+                    return v
+            return 0.0
+
+        black_obj = self._get_black_screen_obj(outfit_no)
+        black_pixmap = black_obj.get('pixmap') if black_obj else None
+        black_pos = black_obj.get('pos', (0.0, 0.0)) if black_obj else (0.0, 0.0)
+        black_offset = black_obj.get('offset', (0.0, 0.0)) if black_obj else (0.0, 0.0)
+
+        return {
+            'closed_frames': closed_frames,
+            'open_frames': open_frames,
+            'animSpeed': anim_speed,
+            'bounce': {
+                'xAmp': max_abs('xAmp'),
+                'yAmp': max_abs('yAmp'),
+                'xFrq': first_nonzero('xFrq'),
+                'yFrq': first_nonzero('yFrq'),
+                'stretchAmount': max_abs('stretchAmount')
+            },
+            # 黑屏作为独立覆盖层保存，绝不替换角色本体。
+            'black_screen': black_pixmap,
+            'black_screen_pos': black_pos,
+            'black_screen_offset': black_offset
+        }
+
+    def load(self, file_path):
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+            a = content.find('{')
+            b = content.rfind('}') + 1
+            if a < 0 or b <= a:
+                raise ValueError('无法找到 JSON 数据')
+            data = json.loads(content[a:b])
+            self.objects = []
+            for order, (key, obj) in enumerate(data.items()):
+                if not str(key).isdigit() or not isinstance(obj, dict):
+                    continue
+                pm = self._decode(obj.get('imageData'))
+                if pm.isNull():
+                    continue
+                item = dict(obj)
+                item['pixmap'] = pm
+                item['frames'] = max(1, int(obj.get('frames', 1) or 1))
+                item['showTalk'] = self._talk_mode(obj)
+                item['zindex'] = int(obj.get('zindex', 0) or 0)
+                item['pos'] = self._vector(obj.get('pos', 'Vector2(0, 0)'))
+                item['offset'] = self._vector(obj.get('offset', 'Vector2(0, 0)'))
+                item['_order'] = order
+                self.objects.append(item)
+
+            if not self.objects:
+                raise ValueError('没有可读取的 Base64 PNG 图层')
+            self._make_canvas_size()
+            self.outfits = {}
+            self.outfit_count = 7
+            for n in range(1, 8):
+                built = self._build_outfit(n)
+                if built and built.get('closed_frames'):
+                    self.outfits[n] = built
+
+            # 第6套如果 save 内没有被正确识别到 open 图层，
+            # 使用1-5套共用的同款张嘴素材，保证第6套对话动画仍可正常播放。
+            if 6 in self.outfits and not self.outfits[6].get('open_frames'):
+                for fallback_no in (1, 2, 3, 4, 5):
+                    fallback = self.outfits.get(fallback_no)
+                    if fallback and fallback.get('open_frames'):
+                        self.outfits[6]['open_frames'] = list(fallback['open_frames'])
+                        print(f'Outfit 6: open frames fallback to outfit {fallback_no}')
+                        break
+
+            print(f'DNT save loaded: {file_path}')
+            print('Available outfits:', sorted(self.outfits.keys()))
+            for n in range(1, 8):
+                o = self.outfits.get(n)
+                if o:
+                    print(f'Outfit {n}: closed={len(o["closed_frames"])}, open={len(o["open_frames"])}, animSpeed={o["animSpeed"]}')
+                else:
+                    print(f'Outfit {n}: EMPTY')
+            return True
+        except Exception as e:
+            print(f'读取 DNT save 失败: {e}')
+            import traceback
+            traceback.print_exc()
+            return False
+
+
+def _find_dnt_save():
+    if getattr(sys, 'frozen', False):
+        base_dir = os.path.dirname(os.path.abspath(sys.executable))
+    else:
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+    path = os.path.join(base_dir, 'dnt.save')
+    return path if os.path.isfile(path) else None
+
+
+def _load_dnt_save_layers():
+    global _DNT_RENDERER, _DNT_BOUNCE_CONFIG
+    path = _find_dnt_save()
+    if not path:
+        return None, None
+    renderer = DNTRoleRenderer()
+    if not renderer.load(path):
+        return None, None
+    _DNT_RENDERER = renderer
+    first = min(renderer.outfits.keys())
+    outfit = renderer.outfits[first]
+    _DNT_BOUNCE_CONFIG = outfit['bounce']
+    return outfit['closed_frames'][0], outfit['open_frames'][0]
+
+
+# ============================================================
+# 主窗口 DesktopPet
+# ============================================================
 class DesktopPet(QWidget):
     def __init__(self):
         super().__init__()
-        # 开机自启：Windows 登录后自动启动桌宠。
         set_windows_autostart(True)
-        self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
+        self.setWindowFlags(
+            Qt.FramelessWindowHint
+            | Qt.WindowStaysOnTopHint
+            | Qt.Tool
+        )
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setAttribute(Qt.WA_ShowWithoutActivating)
 
@@ -1890,41 +2430,158 @@ class DesktopPet(QWidget):
         self.scale = min(screen_w / 1920, screen_h / 1080)
         self.lang = 'zh'
 
-        # 加载宠物动画帧
-        self.pet_frames = []
-        for i in range(1, 10):
-            pixmap = QPixmap(resource_path(f"pet{i}.png"))
-            if not pixmap.isNull():
-                scaled_pixmap = pixmap.scaled(int(pixmap.width() * self.scale),
-                                              int(pixmap.height() * self.scale),
-                                              Qt.KeepAspectRatio, Qt.SmoothTransformation)
-                self.pet_frames.append(scaled_pixmap)
-        if not self.pet_frames:
-            self.pet_frames = [QPixmap(resource_path("pet.png"))]
+        # 桌宠形态：dnt = 07版完整DNT动画；classic = 原index的pet1~pet9动画。
+        self.pet_form = 'dnt'
+        self._happy_transition_active = False
+        self.legacy_pet_frames = []
+        self.legacy_pet_happy = QPixmap()
+        self.legacy_frame_index = 0
+        self.legacy_bounce_time = 0.0
+        self._form_switch_timer = None
 
-        self.pet_static = QPixmap(resource_path("pet.png"))
-        self.pet_static = self.pet_static.scaled(int(self.pet_static.width() * self.scale),
-                                                 int(self.pet_static.height() * self.scale),
-                                                 Qt.KeepAspectRatio, Qt.SmoothTransformation)
-        self.pet_happy = QPixmap(resource_path("pet-happy.png"))
-        self.pet_happy = self.pet_happy.scaled(int(self.pet_happy.width() * self.scale),
-                                               int(self.pet_happy.height() * self.scale),
-                                               Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        # 加载原 index 的 pet1~pet9 / pet-happy 资源。
+        for i in range(1, 10):
+            pm = QPixmap(resource_path(f"pet{i}.png"))
+            if not pm.isNull():
+                self.legacy_pet_frames.append(pm.scaled(
+                    int(pm.width() * self.scale),
+                    int(pm.height() * self.scale),
+                    Qt.KeepAspectRatio, Qt.SmoothTransformation
+                ))
+        if not self.legacy_pet_frames:
+            fallback = QPixmap(resource_path("pet.png"))
+            if not fallback.isNull():
+                self.legacy_pet_frames = [fallback.scaled(
+                    int(fallback.width() * self.scale),
+                    int(fallback.height() * self.scale),
+                    Qt.KeepAspectRatio, Qt.SmoothTransformation
+                )]
+        happy = QPixmap(resource_path("pet-happy.png"))
+        if not happy.isNull():
+            self.legacy_pet_happy = happy.scaled(
+                int(happy.width() * self.scale),
+                int(happy.height() * self.scale),
+                Qt.KeepAspectRatio, Qt.SmoothTransformation
+            )
+
+        # 初始化对话队列
+        self.dialog_queue = []
+        self.is_displaying = False
+        self.dialog_timer = None
+        self.current_dialog_requires_confirmation = False
+        self.current_reminder_key = None
+        self._reminder_retry_timers = {}
+        self._pending_reminders = set()
+
+        # 番茄钟相关
+        self.tomato_display_active = False
+        self.tomato_update_timer = QTimer(self)
+
+        # 动画相关
+        self.animation_paused = False
+        self.auto_dialog_enabled = True
+        self.animation_timer_started = False
+
+        # 弹跳相关
+        self.idle_bounce_active = True
+        self.idle_bounce_time = 0.0
+        self.idle_x_amp = 0.0
+        self.idle_y_amp = 0.0
+        self.idle_x_frq = 0.0
+        self.idle_y_frq = 0.0
+        self.idle_stretch = 0.0
+
+        # 嘴巴动画相关 - 必须在_load_current_outfit之前初始化
+        self._mouth_phase = 0  # 0=闭嘴, 1=张嘴
+        self._stop_after_play = False
+        self._mouth_animation_active = False
+        self._mouth_end_animation = False
+
+        # 黑屏相关 - 用于记录黑屏是否正在显示
+        self._black_screen_active = False
+        # 保存黑屏显示前的帧，用于恢复
+        self._black_screen_previous_pixmap = None
+
+        # 创建系统托盘图标（先创建，避免后面报错）
+        self.create_tray_icon()
+
+        # 加载 DNT .save 角色系统
+        self.pet_static, self.pet_talking = _load_dnt_save_layers()
+        self.role_renderer = globals().get("_DNT_RENDERER")
+
+        if self.pet_static is None or self.role_renderer is None:
+            raise FileNotFoundError(
+                "未找到可用的 dnt.save，请将 dnt.save 放在 "
+                "index.py / DesktopPet.exe 同目录。"
+            )
+
+        self.available_outfits = sorted(self.role_renderer.outfits.keys())
+        self.current_outfit = self.available_outfits[0]
+        self.outfit_count = 7
+
+        self.pet_closed_frames = []
+        self.pet_open_frames = []
+
+        # 黑屏定时器（在_load_current_outfit之前创建）
+        self.black_screen_timer = QTimer(self)
+        self.black_screen_timer.setSingleShot(True)
+        self.black_screen_timer.timeout.connect(self._show_black_screen)
+
+        self.black_screen_hide_timer = QTimer(self)
+        self.black_screen_hide_timer.setSingleShot(True)
+        self.black_screen_hide_timer.timeout.connect(self._hide_black_screen)
+
+        self._load_current_outfit(self.current_outfit)
+
+        self.pet_frames = list(self.pet_closed_frames)
+        self.pet_static = self.pet_frames[0] if self.pet_frames else QPixmap()
+        self.pet_talking = self.pet_open_frames[0] if self.pet_open_frames else self.pet_static
+        self.pet_happy = self.pet_static
 
         self.current_frame_index = 0
-        self.current_pixmap = self.pet_frames[0]
+        self._talking_one_shot = False
+        self.current_pixmap = self.pet_frames[0] if self.pet_frames else QPixmap()
 
-        pet_w = self.pet_frames[0].width()
-        pet_h = self.pet_frames[0].height()
+        # 闲置动画参数 - 从save中读取
+        self.idle_bounce_active = True
+        self.idle_bounce_time = 0.0
+        self.idle_x_amp = 0.0
+        self.idle_y_amp = 0.0
+        self.idle_x_frq = 0.0
+        self.idle_y_frq = 0.0
+        self.idle_stretch = 0.0
+        self._idle_last_tick = time.monotonic()
+        self._load_idle_bounce_params()
+
+        pet_w = self.pet_frames[0].width() if self.pet_frames else 200
+        pet_h = self.pet_frames[0].height() if self.pet_frames else 200
 
         self.label = FadeLabel(self)
-        self.label.setPixmap(self.pet_happy)
+        self.label.setAlignment(Qt.AlignCenter)
         self.label.setWindowOpacity(1.0)
-        self.pet_x = (self.width() - pet_w) // 2
-        self.pet_y = (self.height() - pet_h) // 2
-        self.label.setGeometry(self.pet_x, self.pet_y, pet_w, pet_h)
+        self._show_pet_frame_fixed(self.pet_static)
 
         self.bubble = BubbleWidget(self)
+
+        # 对话张嘴定时器 - 0.1秒切换闭嘴和开口
+        self.mouth_timer = QTimer(self)
+        self.mouth_timer.setInterval(100)  # 0.1秒
+        self.mouth_timer.timeout.connect(self._toggle_talking_mouth)
+        self.is_talking_mouth_open = False
+        self._talk_open_one_shot = False
+        self.current_mouth_frame_index = 0
+
+        # 对话弹跳状态
+        self.dialogue_bounce_active = False
+        self.dialogue_bounce_elapsed = 0.0
+        self.dialogue_session_active = False
+        self._talk_open_session_started = False
+
+        # 闲置弹跳定时器
+        self.idle_bounce_timer = QTimer(self)
+        self.idle_bounce_timer.timeout.connect(self._update_idle_bounce)
+        self.idle_bounce_timer.start(50)
+
         self.control_panel = None
         self.news_window = None
         self.midnight_window = None
@@ -1933,90 +2590,778 @@ class DesktopPet(QWidget):
         self.animation_paused = False
         self.auto_dialog_enabled = True
 
-        self.startup_frames = [self.pet_happy] + self.pet_frames
+        self.startup_frames = [self.pet_happy] + self.pet_frames if self.pet_frames else [self.pet_happy]
+        self._happy_transition_active = True
         self.startup_index = 0
         self.startup_timer = QTimer(self)
-        self.startup_timer.timeout.connect(self.startup_animation)
-        self.startup_timer.start(500)
+        self.startup_timer.timeout.connect(self._startup_animation)
+        self.startup_timer.start(1000)
 
         self.animation_timer = QTimer(self)
-        self.animation_timer.timeout.connect(self.next_frame)
+        self.animation_timer.timeout.connect(self._next_frame)
         self.animation_timer_started = False
 
-        self.bounce_timer = QTimer(self)
-        self.bounce_timer.timeout.connect(self.update_bounce)
-        self.bounce_timer.start(50)
-        self.bounce_time = 0
-        self.is_bouncing = True
-
-        self.dialog_queue = []
-        self.is_displaying = False
-        self.dialog_timer = None
-        self.current_dialog_requires_confirmation = False
-
-        self.tomato_display_active = False
-        self.tomato_update_timer = QTimer(self)
-
-        self.create_tray_icon()
-
-        self.menu = QMenu(self)
-        self.control_action = QAction(self)
-        self.control_action.triggered.connect(self.show_control_panel)
-        self.flirt_action = QAction(self)
-        self.flirt_action.triggered.connect(self.flirt)
-        self.news_action = QAction(self)
-        self.news_action.triggered.connect(self.show_news)
-        self.midnight_action = QAction(self)
-        self.midnight_action.triggered.connect(self.show_midnight_news)
-        self.note_action = QAction(self)
-        self.note_action.triggered.connect(self.show_note)
-        self.toggle_animation_action = QAction(self)
-        self.toggle_animation_action.triggered.connect(self.toggle_animation)
-        self.toggle_visibility_action = QAction(self)
-        self.toggle_visibility_action.triggered.connect(self.toggle_visibility_from_menu)
-        self.toggle_auto_dialog_action = QAction(self)
-        self.toggle_auto_dialog_action.triggered.connect(self.toggle_auto_dialog)
-        self.lang_action = QAction(self)
-        self.lang_action.triggered.connect(self.switch_language)
-        self.quit_action = QAction(self)
-        self.quit_action.triggered.connect(self.quit_app)
-
-        self.menu.addAction(self.control_action)
-        self.menu.addAction(self.note_action)
-        self.menu.addAction(self.flirt_action)
-        self.menu.addAction(self.news_action)
-        self.menu.addAction(self.midnight_action)
-        self.menu.addAction(self.toggle_animation_action)
-        self.menu.addAction(self.toggle_visibility_action)
-        self.menu.addAction(self.toggle_auto_dialog_action)
-        self.menu.addSeparator()
-        self.menu.addAction(self.lang_action)
-        self.menu.addSeparator()
-        self.menu.addAction(self.quit_action)
-
-        self.update_menu_language()
+        # 对话弹跳定时器 - 独立驱动
+        self.dialogue_bounce_timer = QTimer(self)
+        self.dialogue_bounce_timer.timeout.connect(self._update_dialogue_bounce)
+        self.dialogue_bounce_timer.setInterval(50)
 
         self.drag_pos = None
         self.is_dragging = False
 
         self.random_timer = QTimer(self)
-        self.random_timer.timeout.connect(self.random_dialog)
+        self.random_timer.timeout.connect(self._random_dialog)
         self.random_timer.start(30 * 60 * 1000)
 
-        # 每小时检查一次便签；若 note.txt 有内容，则随机抽取一句并附带角色台词。
         self.note_repeat_timer = QTimer(self)
-        self.note_repeat_timer.timeout.connect(self.repeat_random_note)
+        self.note_repeat_timer.timeout.connect(self._repeat_random_note)
         self.note_repeat_timer.start(60 * 1000)
         self.note_repeat_elapsed = 0
 
+        # 创建菜单
+        self.create_menu()
+
         self.add_dialog(random.choice(get_dialogues(self.lang, 'start')))
 
+        # 启动时必须先强制显示文件夹中的 pet-happy.png 1 秒。
+        # 不能依赖 startup_frames = [happy] + pet_frames，
+        # 因为初始化过程中前面的 pet_static / 对话 / 黑屏逻辑可能覆盖首帧。
+        self._start_happy_transition()
+
+    def _load_idle_bounce_params(self):
+        """读取当前套装在 dnt.save 中保存的 DuangDuang 参数。
+
+        不再给所有套装强行使用同一组参数。尤其第7套在 save 中
+        的 xAmp/yAmp/xFrq/yFrq/stretchAmount 与 1-6 套不同，统一
+        使用固定的大参数会把第7套的 Squash 放大成明显抖动。
+        """
+        outfit = getattr(self, 'role_renderer', None)
+        outfit = outfit.outfits.get(self.current_outfit, {}) if outfit else {}
+        cfg = outfit.get('bounce', {}) or {}
+
+        self.idle_x_amp = float(cfg.get('xAmp', 3.0) or 3.0)
+        self.idle_y_amp = float(cfg.get('yAmp', 6.0) or 6.0)
+        self.idle_x_frq = float(cfg.get('xFrq', 0.02) or 0.02)
+        self.idle_y_frq = float(cfg.get('yFrq', 0.025) or 0.025)
+        self.idle_stretch = abs(float(cfg.get('stretchAmount', 4.25) or 4.25))
+
+        print(f"Outfit {self.current_outfit} bounce - "
+              f"xAmp: {self.idle_x_amp}, yAmp: {self.idle_y_amp}, "
+              f"xFrq: {self.idle_x_frq}, yFrq: {self.idle_y_frq}, "
+              f"stretch: {self.idle_stretch}")
+        
+    def _load_current_outfit(self, outfit_no):
+        outfit = self.role_renderer.outfits.get(outfit_no)
+        if not outfit:
+            return False
+
+        self.current_outfit = outfit_no
+
+        def scale_frames(frames):
+            result = []
+            for pixmap in frames:
+                if pixmap is None or pixmap.isNull():
+                    continue
+                result.append(pixmap.scaled(
+                    int(pixmap.width() * self.scale),
+                    int(pixmap.height() * self.scale),
+                    Qt.KeepAspectRatio, Qt.SmoothTransformation
+                ))
+            return result
+
+        self.pet_closed_frames = scale_frames(outfit.get('closed_frames', []))
+        self.pet_open_frames = scale_frames(outfit.get('open_frames', []))
+
+        if not self.pet_closed_frames:
+            return False
+
+        self.pet_frames = list(self.pet_closed_frames)
+        self.pet_static = self.pet_closed_frames[0]
+        self.pet_talking = self.pet_open_frames[0] if self.pet_open_frames else self.pet_static
+        self.pet_happy = self.pet_static
+
+        self.current_frame_index = 0
+        self.current_mouth_frame_index = 0
+        self._talk_open_one_shot = False
+
+        # 更新闲置弹跳参数
+        self._load_idle_bounce_params()
+
+        # 更新动画速度
+        self.save_anim_speed = float(outfit.get('animSpeed', 0) or 0)
+        if self.save_anim_speed > 0:
+            self.save_animation_interval = max(30, int(1000 / self.save_anim_speed))
+        else:
+            self.save_animation_interval = 300
+
+        self.current_pixmap = self.pet_static
+        self._idle_last_tick = time.monotonic()
+
+        # 切换套装时保持同一个渲染画布尺寸。
+        # 不让 QLabel 在套装之间从 400x400 / 448x448 来回变化，
+        # 否则 Qt 的重排和整数取整会表现成“抖动”。
+        if hasattr(self, 'label'):
+            self._show_pet_frame_fixed(self.pet_static)
+
+        if hasattr(self, 'animation_timer'):
+            if self.animation_timer.isActive():
+                self.animation_timer.stop()
+            if getattr(self, 'animation_timer_started', False) and not getattr(self, 'animation_paused', False):
+                self.animation_timer.start(self.save_animation_interval)
+
+        return True
+
+    def change_outfit(self, outfit_no):
+        if getattr(self, 'pet_form', 'dnt') != 'dnt':
+            return
+        try:
+            outfit_no = int(outfit_no)
+        except Exception:
+            return
+        if outfit_no not in self.role_renderer.outfits:
+            return
+        was_talking = self.is_displaying
+        if getattr(self, "_black_screen_active", False):
+            self._hide_black_screen()
+        if hasattr(self, "mouth_timer"):
+            self.mouth_timer.stop()
+        if self._load_current_outfit(outfit_no):
+            for i, action in enumerate(getattr(self, 'costume_actions', []), start=1):
+                action.setChecked(i == outfit_no)
+            if was_talking:
+                if self.pet_open_frames:
+                    self._show_pet_frame_fixed(self.pet_open_frames[0])
+                else:
+                    self._show_pet_frame_fixed(self.pet_static)
+            else:
+                if self.pet_closed_frames:
+                    self._show_pet_frame_fixed(self.pet_closed_frames[self.current_frame_index % len(self.pet_closed_frames)])
+                else:
+                    self._show_pet_frame_fixed(self.pet_static)
+
+        # 切换服装后立即用当前动画相位重绘一次固定画布，避免
+        # 新旧套装的 QLabel / pixmap 尺寸在两个定时器之间来回跳变。
+        if self.pet_frames and not self.is_displaying and not self._mouth_animation_active:
+            self._update_idle_bounce()
+
+        # 切换服装后重新启动黑屏计时器
+        self._start_black_screen_timer()
+
+    # ==================== 黑屏图层功能 ====================
+    def _start_black_screen_timer(self):
+        """启动黑屏计时器（闲置5秒后显示）"""
+        if not hasattr(self, 'black_screen_timer'):
+            return
+        self.black_screen_timer.stop()
+        if getattr(self, 'pet_form', 'dnt') == 'classic':
+            return
+        if getattr(self, '_happy_transition_active', False):
+            return
+        # 条件：没有对话、没有番茄钟、没有嘴部动画、没有黑屏正在显示、没有拖拽
+        if (not self.is_displaying and 
+            not self.tomato_display_active and
+            not self._mouth_animation_active and
+            not self._black_screen_active and
+            not self.is_dragging):
+            self.black_screen_timer.start(1800000)  # 1800秒后显示
+
+    def _show_black_screen(self):
+        """显示黑屏覆盖层：仅 DNT 形态允许显示。"""
+        if getattr(self, 'pet_form', 'dnt') == 'classic' or getattr(self, '_happy_transition_active', False):
+            return
+        if (self.is_displaying or
+            self.tomato_display_active or
+            self._mouth_animation_active or
+            self._black_screen_active or
+            self.is_dragging):
+            return
+
+        outfit = self.role_renderer.outfits.get(self.current_outfit, {})
+        black_screen = outfit.get('black_screen')
+
+        if black_screen is None or black_screen.isNull():
+            return
+
+        # 保存黑屏前的完整角色帧。
+        # 注意：这里保存的是“角色本体”，不是黑屏替代图。
+        self._black_screen_previous_pixmap = self.current_pixmap
+
+        # 当前角色画布已经是完整的400x400合成图；
+        # 黑屏也放到同一画布上，再按照 dnt.save 中该套装自己的
+        # pos + offset 放置，最后一次性显示。
+        combined = self._compose_black_screen_overlay(
+            self.current_pixmap,
+            outfit
+        )
+
+        if combined is None or combined.isNull():
+            return
+
+        self._black_screen_active = True
+        self._set_mouth_frame_centered(combined)
+
+        self.black_screen_hide_timer.stop()
+        self.black_screen_hide_timer.start(3000)
+
+    def _compose_black_screen_overlay(self, base_pixmap, outfit):
+        """把黑屏叠加到完整角色上，而不是替换完整角色。"""
+        if base_pixmap is None or base_pixmap.isNull():
+            return QPixmap()
+
+        black = outfit.get('black_screen')
+        if black is None or black.isNull():
+            return base_pixmap
+
+        # 角色本体与黑屏保持同一个原始画布尺寸。
+        canvas_w = base_pixmap.width()
+        canvas_h = base_pixmap.height()
+
+        image = QImage(
+            canvas_w,
+            canvas_h,
+            QImage.Format_ARGB32_Premultiplied
+        )
+        image.fill(Qt.transparent)
+
+        painter = QPainter(image)
+        painter.drawPixmap(0, 0, base_pixmap)
+
+        try:
+            px, py = outfit.get('black_screen_pos', (0.0, 0.0))
+            ox, oy = outfit.get('black_screen_offset', (0.0, 0.0))
+            px = float(px) + float(ox)
+            py = float(py) + float(oy)
+        except Exception:
+            px, py = 0.0, 0.0
+
+        # base_pixmap 已经按 self.scale 缩放，因此 dnt.save 中
+        # 的原始像素位置也必须同步缩放。
+        x = int(round(px * self.scale))
+        y = int(round(py * self.scale))
+
+        scaled_black = black.scaled(
+            max(1, int(round(black.width() * self.scale))),
+            max(1, int(round(black.height() * self.scale))),
+            Qt.IgnoreAspectRatio,
+            Qt.SmoothTransformation
+        )
+
+        # 黑屏的 z-order 固定高于头、身体、嘴巴、服装。
+        painter.drawPixmap(x, y, scaled_black)
+        painter.end()
+
+        return QPixmap.fromImage(image)
+
+    def _hide_black_screen(self):
+        """隐藏黑屏覆盖层，恢复完整角色帧。"""
+        self._black_screen_active = False
+        self.black_screen_hide_timer.stop()
+
+        if self._black_screen_previous_pixmap and not self._black_screen_previous_pixmap.isNull():
+            self._set_mouth_frame_centered(self._black_screen_previous_pixmap)
+            self.current_pixmap = self._black_screen_previous_pixmap
+        elif self.pet_closed_frames:
+            idx = self.current_frame_index % len(self.pet_closed_frames)
+            pixmap = self.pet_closed_frames[idx]
+            self._set_mouth_frame_centered(pixmap)
+            self.current_pixmap = pixmap
+        else:
+            self._set_mouth_frame_centered(self.pet_static)
+            self.current_pixmap = self.pet_static
+
+        self._black_screen_previous_pixmap = None
+        self._start_black_screen_timer()
+
+    def _reset_black_screen_timer(self):
+        """重置黑屏计时器（用户交互时调用）。"""
+        if self._black_screen_active:
+            self._hide_black_screen()
+
+        if hasattr(self, 'black_screen_timer'):
+            self.black_screen_timer.stop()
+
+            # 对话/嘴部动画/番茄钟期间不启动黑屏。
+            if (not self.is_displaying and
+                not self.tomato_display_active and
+                not self._mouth_animation_active and
+                not self.is_dragging):
+                self.black_screen_timer.start(5000)
+
+    # ==================== 稳定角色渲染 ====================
+    def _get_pet_render_size(self):
+        """返回所有套装共用的固定渲染画布尺寸。"""
+        if getattr(self, 'pet_static', None) is not None and not self.pet_static.isNull():
+            base_w = self.pet_static.width()
+            base_h = self.pet_static.height()
+        elif getattr(self, 'pet_frames', None):
+            base_w = self.pet_frames[0].width()
+            base_h = self.pet_frames[0].height()
+        else:
+            base_w = base_h = max(1, int(round(400 * getattr(self, 'scale', 1.0))))
+
+        # dnt.save 的普通角色帧都是同一 400x400 画布。
+        # 留出固定透明边距给 Squash/Stretch，整个程序生命周期内不改变。
+        pad = 1.12
+        return (max(1, int(round(base_w * pad))),
+                max(1, int(round(base_h * pad))))
+
+    def _render_pet_to_fixed_canvas(self, pixmap, scale_x=1.0, scale_y=1.0):
+        """把角色帧绘制到固定画布，避免 QLabel 尺寸变化造成抖动。"""
+        if pixmap is None or pixmap.isNull():
+            return QPixmap()
+
+        canvas_w, canvas_h = self._get_pet_render_size()
+        canvas = QPixmap(canvas_w, canvas_h)
+        canvas.fill(Qt.transparent)
+
+        painter = QPainter(canvas)
+        painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
+        painter.translate(canvas_w / 2.0, canvas_h / 2.0)
+        painter.scale(float(scale_x), float(scale_y))
+        painter.drawPixmap(
+            int(round(-pixmap.width() / 2.0)),
+            int(round(-pixmap.height() / 2.0)),
+            pixmap
+        )
+        painter.end()
+        return canvas
+
+    def _show_pet_frame_fixed(self, pixmap, x_offset=0.0, y_offset=0.0,
+                              scale_x=1.0, scale_y=1.0):
+        """统一显示角色帧：永远使用同一 QLabel 尺寸。"""
+        if pixmap is None or pixmap.isNull() or not hasattr(self, 'label'):
+            return
+
+        canvas = self._render_pet_to_fixed_canvas(
+            pixmap, scale_x=scale_x, scale_y=scale_y
+        )
+        if canvas.isNull():
+            return
+
+        canvas_w = canvas.width()
+        canvas_h = canvas.height()
+        center_x = self.width() / 2.0 + float(x_offset)
+        center_y = self.height() / 2.0 + float(y_offset)
+        x = int(round(center_x - canvas_w / 2.0))
+        y = int(round(center_y - canvas_h / 2.0))
+
+        self.label.setGeometry(x, y, canvas_w, canvas_h)
+        self.label.setPixmap(canvas)
+        self.label.setWindowOpacity(1.0)
+        self.label.update()
+
+    # ==================== 闲置弹跳动画 ====================
+    def _update_idle_bounce(self):
+        """闲置弹跳 + Squash/Stretch。
+
+        关键修复：角色永远绘制到同一个固定画布，动画只改变画布内部
+        的缩放和整个画布的位置，不再改变 QLabel 的宽高。
+        """
+        if getattr(self, '_happy_transition_active', False):
+            return
+        if self._black_screen_active:
+            return
+        if getattr(self, "_mouth_end_animation", False):
+            return
+        if self.pet_form == 'classic':
+            self._update_classic_bounce()
+            return
+        if self.tomato_display_active:
+            return
+        if self.dialogue_bounce_active:
+            return
+        if self.is_dragging:
+            return
+        if not self.pet_frames:
+            return
+
+        now = time.monotonic()
+        last = getattr(self, "_idle_last_tick", None)
+        if last is None:
+            dt = 0.05
+        else:
+            dt = max(0.001, min(0.10, now - last))
+        self._idle_last_tick = now
+        self.idle_bounce_time += dt
+        t = self.idle_bounce_time
+
+        x_amp = float(getattr(self, "idle_x_amp", 3.0))
+        y_amp = float(getattr(self, "idle_y_amp", 6.0))
+        x_frq = float(getattr(self, "idle_x_frq", 0.02))
+        y_frq = float(getattr(self, "idle_y_frq", 0.025))
+
+        phase_x = t * x_frq * 2.0 * math.pi
+        phase_y = t * y_frq * 2.0 * math.pi
+        bounce_x = math.sin(phase_x) * x_amp
+        bounce_y = math.sin(phase_y) * y_amp
+
+        squash_amount = float(getattr(self, "idle_stretch", 4.25))
+        squash_speed = 5.0
+        squash = math.cos(phase_y * squash_speed) * squash_amount / 100.0
+
+        # Squash/Stretch 只改变上下高度。
+        # X 方向始终保持 100%，绝不左右拉伸或压缩。
+        scale_x = 1.0
+        scale_y = max(0.90, min(1.10, 1.0 + squash))
+
+        if self.is_talking_mouth_open and self.pet_open_frames:
+            source_pixmap = self.pet_open_frames[
+                self.current_mouth_frame_index % len(self.pet_open_frames)
+            ]
+        else:
+            source_pixmap = self.current_pixmap
+
+        if source_pixmap is None or source_pixmap.isNull():
+            return
+
+        # 固定画布 + 浮点缩放。QLabel 尺寸和角色中心始终不变。
+        self._show_pet_frame_fixed(
+            source_pixmap,
+            x_offset=bounce_x,
+            y_offset=bounce_y,
+            scale_x=scale_x,
+            scale_y=scale_y
+        )
+
+    # ==================== 对话弹跳动画 ====================
+    def _start_dialogue_bounce(self):
+        """对话开始时播放一次弹跳动画"""
+        if self.tomato_display_active:
+            return
+
+        # 重置黑屏计时器
+        self._reset_black_screen_timer()
+
+        outfit = self.role_renderer.outfits.get(self.current_outfit, {})
+        self._dialogue_bounce_cfg = outfit.get('bounce', {})
+        
+        self.dialogue_bounce_active = True
+        self.dialogue_bounce_elapsed = 0.0
+        self.dialogue_bounce_timer.start(50)
+
+    def _update_dialogue_bounce(self):
+        """对话弹跳动画：只移动固定渲染画布，不改变其尺寸。"""
+        if self.tomato_display_active or not self.dialogue_bounce_active:
+            return
+
+        cfg = self._dialogue_bounce_cfg if hasattr(self, '_dialogue_bounce_cfg') else {}
+        duration = 0.55
+        self.dialogue_bounce_elapsed += 0.05
+        progress = self.dialogue_bounce_elapsed / duration
+
+        if progress >= 1.0:
+            self.dialogue_bounce_active = False
+            self.dialogue_bounce_elapsed = 0.0
+            self.dialogue_bounce_timer.stop()
+            # 结束时回到固定画布中心；不要恢复成 400x400 QLabel。
+            if not self._black_screen_active:
+                if self.pet_closed_frames:
+                    pixmap = self.pet_closed_frames[self.current_frame_index % len(self.pet_closed_frames)]
+                else:
+                    pixmap = self.pet_static
+                self._show_pet_frame_fixed(pixmap)
+            return
+
+        x_amp = float(cfg.get('xAmp', 0) or 0)
+        y_amp = float(cfg.get('yAmp', 0) or 0)
+        x_frq = float(cfg.get('xFrq', 0) or 0)
+        y_frq = float(cfg.get('yFrq', 0) or 0)
+        if x_amp == 0:
+            x_amp = 4.0
+        if y_amp == 0:
+            y_amp = 8.0
+        if x_frq == 0:
+            x_frq = 0.06
+        if y_frq == 0:
+            y_frq = 0.06
+
+        decay = 1.0 - progress * progress
+        t = self.dialogue_bounce_elapsed
+        bounce_x = math.sin(t * x_frq * 2 * math.pi) * x_amp * decay
+        bounce_y = math.sin(t * y_frq * 2 * math.pi) * y_amp * decay
+
+        # 对话期间保留当前嘴部帧，只移动固定画布。
+        if self.is_talking_mouth_open and self.pet_open_frames:
+            pixmap = self.pet_open_frames[self.current_mouth_frame_index % len(self.pet_open_frames)]
+        else:
+            pixmap = self.current_pixmap
+        self._show_pet_frame_fixed(pixmap, x_offset=bounce_x, y_offset=bounce_y)
+
+    # ==================== 对话张嘴动画 ====================
+    def _set_mouth_frame_centered(self, pixmap):
+        """显示嘴部帧，但始终保持固定 QLabel 画布尺寸。"""
+        if pixmap is None or pixmap.isNull() or not hasattr(self, 'label'):
+            return
+
+        try:
+            self.label.opacity_effect.stop()
+            self.label._is_fading = False
+            self.label._pending_pixmap = None
+            self.label._fade_in_pixmap = None
+        except Exception:
+            pass
+
+        self._show_pet_frame_fixed(pixmap)
+        self.label.update()
+        self.label.repaint()
+
+    def _start_talking_mouth(self):
+        """开始张嘴动画"""
+        # pet-happy 过渡期间绝对不能被对话嘴部动画覆盖。
+        if getattr(self, '_happy_transition_active', False):
+            return
+        if self.pet_form == 'classic':
+            return
+
+        # 重置黑屏计时器
+        self._reset_black_screen_timer()
+
+        if not self.pet_open_frames:
+            return
+
+        # 先完全恢复到闭嘴状态，清理所有残留
+        self._mouth_end_animation = False
+        self._mouth_animation_active = False
+        self.is_talking_mouth_open = False
+        self._talk_open_one_shot = False
+        self.current_mouth_frame_index = 0
+        self._mouth_phase = 0
+
+        # 停止所有相关定时器
+        if hasattr(self, "mouth_timer"):
+            self.mouth_timer.stop()
+        try:
+            self._stop_timer.stop()
+        except Exception:
+            pass
+        try:
+            self._restore_timer.stop()
+        except Exception:
+            pass
+        self.dialogue_bounce_active = False
+        if hasattr(self, "dialogue_bounce_timer"):
+            self.dialogue_bounce_timer.stop()
+
+        # 先恢复闭嘴帧
+        if self.pet_closed_frames:
+            idx = self.current_frame_index % len(self.pet_closed_frames)
+            pixmap = self.pet_closed_frames[idx]
+            self._set_mouth_frame_centered(pixmap)
+            self.current_pixmap = pixmap
+
+        # 开启嘴部动画锁
+        self._mouth_animation_active = True
+        self._mouth_end_animation = False
+
+        # 停止普通动画计时器
+        if hasattr(self, "animation_timer"):
+            self.animation_timer.stop()
+
+        # 初始化张嘴状态
+        self._talk_open_one_shot = True
+        self.is_talking_mouth_open = True
+        self.current_mouth_frame_index = 0
+        self._mouth_phase = 1
+
+        # 立即显示 open[0]
+        if self.pet_open_frames:
+            pixmap = self.pet_open_frames[0]
+            self._set_mouth_frame_centered(pixmap)
+            self.current_pixmap = pixmap
+
+        # 对话弹跳
+        self._start_dialogue_bounce()
+
+        # 0.1秒切换
+        if hasattr(self, "mouth_timer"):
+            self.mouth_timer.start(100)
+
+    def _toggle_talking_mouth(self):
+        """对话过程中闭嘴 ↔ 张嘴"""
+
+        if self.pet_form == 'classic':
+            return
+        if not getattr(self, "_mouth_animation_active", False):
+            if hasattr(self, "mouth_timer"):
+                self.mouth_timer.stop()
+            return
+
+        if getattr(self, "_mouth_end_animation", False):
+            if hasattr(self, "mouth_timer"):
+                self.mouth_timer.stop()
+            return
+
+        if not getattr(self, "_talk_open_one_shot", False):
+            if hasattr(self, "mouth_timer"):
+                self.mouth_timer.stop()
+            return
+
+        if not self.pet_open_frames:
+            self._restore_normal_frame()
+            return
+
+        if self._mouth_phase == 0:
+            # 闭嘴 -> 张嘴
+            self._mouth_phase = 1
+            self.is_talking_mouth_open = True
+            self.current_mouth_frame_index = 0
+            pixmap = self.pet_open_frames[0]
+            self._set_mouth_frame_centered(pixmap)
+            self.current_pixmap = pixmap
+        else:
+            # 张嘴 -> 闭嘴
+            self._mouth_phase = 0
+            self.is_talking_mouth_open = False
+            if self.pet_closed_frames:
+                idx = self.current_frame_index % len(self.pet_closed_frames)
+                pixmap = self.pet_closed_frames[idx]
+                self._set_mouth_frame_centered(pixmap)
+                self.current_pixmap = pixmap
+            else:
+                self._set_mouth_frame_centered(self.pet_static)
+                self.current_pixmap = self.pet_static
+
+        if hasattr(self, "mouth_timer"):
+            self.mouth_timer.start(100)
+
+    def _stop_talking_mouth(self):
+        """对话结束，进入结束嘴部动画。经典pet1~pet9形态不使用DNT嘴部帧。"""
+
+        if self.pet_form == 'classic':
+            if hasattr(self, "mouth_timer"):
+                self.mouth_timer.stop()
+            self._mouth_animation_active = False
+            self._mouth_end_animation = False
+            self.is_talking_mouth_open = False
+            self._mouth_phase = 0
+            if self.legacy_pet_frames:
+                idx = self.legacy_frame_index % len(self.legacy_pet_frames)
+                self.current_pixmap = self.legacy_pet_frames[idx]
+                self._show_pet_frame_fixed(self.current_pixmap)
+            return
+
+        if hasattr(self, "mouth_timer"):
+            self.mouth_timer.stop()
+
+        self._talk_open_one_shot = False
+        self.is_talking_mouth_open = False
+        self._mouth_phase = 0
+
+        self._mouth_animation_active = True
+        self._mouth_end_animation = True
+
+        try:
+            self._stop_timer.stop()
+        except Exception:
+            pass
+
+        try:
+            self._restore_timer.stop()
+        except Exception:
+            pass
+
+        if hasattr(self, "animation_timer"):
+            self.animation_timer.stop()
+
+        if len(self.pet_open_frames) < 2:
+            self._restore_normal_frame()
+            return
+
+        self.current_mouth_frame_index = 1
+        pixmap = self.pet_open_frames[1]
+        self._set_mouth_frame_centered(pixmap)
+        self.current_pixmap = pixmap
+
+        self._stop_timer = QTimer(self)
+        self._stop_timer.setSingleShot(True)
+        self._stop_timer.timeout.connect(self._play_second_mouth_frame)
+        self._stop_timer.start(500)
+
+    def _play_second_mouth_frame(self):
+        """第二阶段：open[2] -> 0.5秒 -> 恢复闭嘴"""
+
+        if not getattr(self, "_mouth_end_animation", False):
+            return
+
+        if len(self.pet_open_frames) < 3:
+            self._restore_normal_frame()
+            return
+
+        # 先停止旧的恢复定时器
+        try:
+            self._restore_timer.stop()
+        except Exception:
+            pass
+
+        self.current_mouth_frame_index = 2
+        pixmap = self.pet_open_frames[2]
+        # 直接设置图片
+        self._set_mouth_frame_centered(pixmap)
+        self.current_pixmap = pixmap
+
+        # 创建新的恢复定时器
+        self._restore_timer = QTimer(self)
+        self._restore_timer.setSingleShot(True)
+        self._restore_timer.timeout.connect(self._restore_normal_frame)
+        self._restore_timer.start(500)
+
+    def _restore_normal_frame(self):
+        """恢复普通闭嘴动画"""
+
+        # 先重置所有状态
+        self._mouth_end_animation = False
+        self._mouth_animation_active = False
+        self.is_talking_mouth_open = False
+        self._talk_open_one_shot = False
+        self.current_mouth_frame_index = 0
+        self._mouth_phase = 0
+
+        # 停止所有定时器
+        if hasattr(self, "mouth_timer"):
+            self.mouth_timer.stop()
+        try:
+            self._stop_timer.stop()
+        except Exception:
+            pass
+        try:
+            self._restore_timer.stop()
+        except Exception:
+            pass
+
+        self.dialogue_bounce_active = False
+        if hasattr(self, "dialogue_bounce_timer"):
+            self.dialogue_bounce_timer.stop()
+
+        # 如果黑屏正在显示，不要覆盖它
+        if not self._black_screen_active:
+            # 恢复到闭嘴帧
+            if self.pet_closed_frames:
+                idx = self.current_frame_index % len(self.pet_closed_frames)
+                pixmap = self.pet_closed_frames[idx]
+                self._set_mouth_frame_centered(pixmap)
+                self.current_pixmap = pixmap
+            else:
+                self._set_mouth_frame_centered(self.pet_static)
+                self.current_pixmap = self.pet_static
+
+        self.label.setWindowOpacity(1.0)
+
+        # 恢复普通动画
+        if (hasattr(self, "animation_timer") and
+            getattr(self, "animation_timer_started", False) and
+            not getattr(self, "animation_paused", False)):
+            self.animation_timer.start(getattr(self, "save_animation_interval", 300))
+
+        # 重新启动黑屏计时器
+        self._start_black_screen_timer()
+
+    # ==================== 原有方法 ====================
     def switch_language(self):
         if self.lang == 'zh':
             self.lang = 'en'
         else:
             self.lang = 'zh'
-        self.update_menu_language()
+        self._update_menu_language()
         if self.bubble.isVisible() and self.current_dialog_requires_confirmation:
             self.bubble._update_confirm_button_style()
         if self.control_panel:
@@ -2030,13 +3375,17 @@ class DesktopPet(QWidget):
         if self.note_window:
             self.note_window.update_language(self.lang)
 
-    def update_menu_language(self):
+    def _update_menu_language(self):
         if self.lang == 'en':
             self.control_action.setText("Control Panel")
             self.note_action.setText("Notes")
+            self.costume_menu.setTitle("Outfit")
+            self.costume_menu.setEnabled(self.pet_form == 'dnt')
+            self.toggle_animation_action.setEnabled(self.pet_form == 'classic')
             self.flirt_action.setText("Flirt")
             self.news_action.setText("Today's News")
             self.midnight_action.setText("Midnight News")
+            self.pet_form_action.setText("Switch to Classic Pet" if self.pet_form == 'dnt' else "Switch to DNT Pet")
             self.toggle_animation_action.setText("Pause Animation" if not self.animation_paused else "Start Animation")
             self.toggle_visibility_action.setText("Hide Pet" if self.isVisible() else "Show Pet")
             self.toggle_auto_dialog_action.setText("Pause Auto Dialog" if self.auto_dialog_enabled else "Start Auto Dialog")
@@ -2059,11 +3408,15 @@ class DesktopPet(QWidget):
         else:
             self.control_action.setText("控制面板")
             self.note_action.setText("便签")
+            self.costume_menu.setTitle("换装")
+            self.costume_menu.setEnabled(self.pet_form == 'dnt')
+            self.toggle_animation_action.setEnabled(self.pet_form == 'classic')
             self.flirt_action.setText("调情")
             self.news_action.setText("今日新闻")
             self.midnight_action.setText("午夜新闻")
+            self.pet_form_action.setText("切换到桌宠1" if self.pet_form == 'dnt' else "切换到桌宠2")
             self.toggle_animation_action.setText("暂停动画" if not self.animation_paused else "开始动画")
-            self.toggle_visibility_action.setText("隐藏桌宠" if self.isVisible() else "隐藏桌宠")
+            self.toggle_visibility_action.setText("显示/隐藏" if self.isVisible() else "显示/隐藏")
             self.toggle_auto_dialog_action.setText("暂停自动对话" if self.auto_dialog_enabled else "开始自动对话")
             self.lang_action.setText("English")
             self.quit_action.setText("退出")
@@ -2091,7 +3444,7 @@ class DesktopPet(QWidget):
         self.tray_icon.setToolTip("Desk Pet - Click to show/hide")
         tray_menu = QMenu()
         show_action = QAction("显示/隐藏" if self.lang == 'zh' else "Show/Hide", self)
-        show_action.triggered.connect(self.toggle_visibility)
+        show_action.triggered.connect(self._toggle_visibility)
         tray_menu.addAction(show_action)
         control_action = QAction("控制面板" if self.lang == 'zh' else "Control Panel", self)
         control_action.triggered.connect(self.show_control_panel)
@@ -2107,19 +3460,76 @@ class DesktopPet(QWidget):
         quit_action.triggered.connect(self.quit_app)
         tray_menu.addAction(quit_action)
         self.tray_icon.setContextMenu(tray_menu)
-        self.tray_icon.activated.connect(self.on_tray_activated)
+        self.tray_icon.activated.connect(self._on_tray_activated)
         self.tray_icon.show()
 
-    def toggle_visibility_from_menu(self):
+    def _get_form_happy_pixmap(self):
+        """所有打开、关闭、切换形态的过渡统一使用程序文件夹中的 pet-happy.png。
+
+        不区分 DNT / 普通桌宠，也不使用 DNT 当前形态的首帧代替。
+        """
+        happy = getattr(self, 'legacy_pet_happy', QPixmap())
+        if happy is not None and not happy.isNull():
+            return happy
+        # 仅作为文件不存在时的安全回退；正常情况下应始终使用文件夹中的 pet-happy.png。
+        return QPixmap()
+
+    def _start_happy_transition(self):
+        """显示 pet-happy 1 秒，期间禁止黑屏和闲置动画覆盖。"""
+        happy = self._get_form_happy_pixmap()
+        if happy is None or happy.isNull():
+            return
+        self._happy_transition_active = True
+        if hasattr(self, 'black_screen_timer'):
+            self.black_screen_timer.stop()
+        if hasattr(self, 'black_screen_hide_timer'):
+            self.black_screen_hide_timer.stop()
+        self._black_screen_active = False
+        if hasattr(self, 'animation_timer'):
+            self.animation_timer.stop()
+        # 过渡期间禁止嘴巴动画和对话弹跳抢占 pet-happy.png。
+        if hasattr(self, 'mouth_timer'):
+            self.mouth_timer.stop()
+        self._mouth_animation_active = False
+        self._mouth_end_animation = False
+        if hasattr(self, 'dialogue_bounce_timer'):
+            self.dialogue_bounce_timer.stop()
+        self.dialogue_bounce_active = False
+        self.animation_timer_started = False
+        self.startup_timer.stop()
+        self.startup_frames = [happy]
+        self.startup_index = 0
+        # 立即绘制并置顶，确保 1 秒 happy 真正可见。
+        self.current_pixmap = happy
+        self._show_pet_frame_fixed(happy)
+        self.label.raise_()
+        self.show()
+        self.raise_()
+        self.startup_timer.start(1000)
+
+    def _toggle_visibility_from_menu(self):
         if self.isVisible():
-            self.hide()
-            self.toggle_visibility_action.setText("隐藏桌宠" if self.lang == 'zh' else "Hide Pet")
+            # 隐藏前也先显示文件夹中的 pet-happy 1 秒。
+            if hasattr(self, 'black_screen_timer'):
+                self.black_screen_timer.stop()
+            if hasattr(self, 'black_screen_hide_timer'):
+                self.black_screen_hide_timer.stop()
+            self._black_screen_active = False
+            self._start_happy_transition()
+            self.toggle_visibility_action.setText("显示桌宠" if self.lang == 'zh' else "Show Pet")
+            QTimer.singleShot(1000, self._hide_after_happy)
         else:
             self.show()
             self.raise_()
+            self._start_happy_transition()
             self.toggle_visibility_action.setText("隐藏桌宠" if self.lang == 'zh' else "Hide Pet")
 
-    def toggle_auto_dialog(self):
+    def _hide_after_happy(self):
+        if self._happy_transition_active:
+            self._happy_transition_active = False
+        self.hide()
+
+    def _toggle_auto_dialog(self):
         self.auto_dialog_enabled = not self.auto_dialog_enabled
         if self.auto_dialog_enabled:
             self.toggle_auto_dialog_action.setText("暂停自动对话" if self.lang == 'zh' else "Pause Auto Dialog")
@@ -2132,73 +3542,172 @@ class DesktopPet(QWidget):
             msg = "也挺好的，至少我能安静会儿，你也能安静会儿……怎么，你很喜欢听到我念叨你？" if self.lang == 'zh' else "Good, at least I can have some peace, and you too... Wait, do you actually like my nagging?"
             self.add_dialog(msg)
 
-    def toggle_visibility(self):
+    def _toggle_visibility(self):
         if self.isVisible():
-            self.hide()
+            if hasattr(self, 'black_screen_timer'):
+                self.black_screen_timer.stop()
+            if hasattr(self, 'black_screen_hide_timer'):
+                self.black_screen_hide_timer.stop()
+            self._black_screen_active = False
+            self._start_happy_transition()
+            QTimer.singleShot(1000, self._hide_after_happy)
         else:
             self.show()
             self.raise_()
+            self._start_happy_transition()
 
-    def on_tray_activated(self, reason):
+    def _on_tray_activated(self, reason):
         if reason == QSystemTrayIcon.DoubleClick:
-            self.toggle_visibility()
+            self._toggle_visibility()
 
     def closeEvent(self, event):
         event.ignore()
         self.hide()
-        self.tray_icon.showMessage("桌宠" if self.lang == 'zh' else "Desk Pet",
-                                   "程序已最小化到系统托盘" if self.lang == 'zh' else "Program minimized to system tray",
-                                   QSystemTrayIcon.Information, 2000)
+        if hasattr(self, 'tray_icon'):
+            self.tray_icon.showMessage("桌宠" if self.lang == 'zh' else "Desk Pet",
+                                       "程序已最小化到系统托盘" if self.lang == 'zh' else "Program minimized to system tray",
+                                       QSystemTrayIcon.Information, 2000)
 
-    def startup_animation(self):
-        self.startup_index += 1
-        if self.startup_index < len(self.startup_frames):
-            self.label.setPixmapWithFade(self.startup_frames[self.startup_index])
-        else:
-            self.startup_timer.stop()
-            self.animation_timer_started = True
-            self.animation_timer.start(300)
+    def _startup_animation(self):
+        # happy 已经在启动/打开/切换时立即显示；1000ms 后才进入正常动画。
+        self.startup_timer.stop()
+        self._happy_transition_active = False
+        self.startup_index = 0
+        if self.pet_form == 'classic':
             self.current_frame_index = 0
-            self.current_pixmap = self.pet_frames[0]
-            self.label.setPixmap(self.current_pixmap)
-            self.label.setWindowOpacity(1.0)
+            if self.legacy_pet_frames:
+                self.current_pixmap = self.legacy_pet_frames[0]
+                self._show_pet_frame_fixed(self.legacy_pet_frames[0])
+            self.animation_timer.start(300)
+        else:
+            self.current_frame_index = 0
+            if self.pet_frames:
+                self.current_pixmap = self.pet_frames[0]
+                self._show_pet_frame_fixed(self.pet_frames[0])
+            self.animation_timer.start(getattr(self, 'save_animation_interval', 300))
+        self.animation_timer_started = True
+        if self.pet_form == 'dnt':
+            self._start_black_screen_timer()
 
-    def toggle_animation(self):
+    def _toggle_animation(self):
+        # DNT 完整动画不提供暂停按钮；仅普通 pet1~9 形态可暂停。
+        if getattr(self, 'pet_form', 'dnt') != 'classic':
+            return
         self.animation_paused = not self.animation_paused
         if self.animation_paused:
             self.animation_timer.stop()
-            self.label.setPixmapWithFade(self.pet_static)
+            happy_or_static = self.pet_static
+            if self.pet_form == 'classic' and self.legacy_pet_frames:
+                happy_or_static = self.legacy_pet_frames[0]
+            self._show_pet_frame_fixed(happy_or_static)
             self.toggle_animation_action.setText("开始动画" if self.lang == 'zh' else "Start Animation")
         else:
-            self.animation_timer.start(300)
+            self.animation_timer.start(300 if self.pet_form == 'classic' else getattr(self, 'save_animation_interval', 300))
             self.current_frame_index = 0
-            self.current_pixmap = self.pet_frames[0]
-            self.label.setPixmapWithFade(self.current_pixmap)
+            if self.pet_form == 'classic':
+                self.current_pixmap = self.legacy_pet_frames[0] if self.legacy_pet_frames else self.legacy_pet_happy
+            else:
+                self.current_pixmap = self.pet_frames[0] if self.pet_frames else QPixmap()
+            self._show_pet_frame_fixed(self.current_pixmap)
             self.toggle_animation_action.setText("暂停动画" if self.lang == 'zh' else "Pause Animation")
 
-    def next_frame(self):
+    def _next_frame(self):
         if self.animation_paused or not self.animation_timer_started:
             return
-        if not self.is_dragging and self.pet_frames:
-            self.current_frame_index = (self.current_frame_index + 1) % len(self.pet_frames)
-            self.current_pixmap = self.pet_frames[self.current_frame_index]
-            if not self.is_dragging and not self.tomato_display_active:
-                self.label.setPixmapWithFade(self.current_pixmap)
-
-    def update_bounce(self):
-        if not self.is_bouncing or self.tomato_display_active:
+        if self.is_displaying or self.is_dragging or self.tomato_display_active:
             return
-        self.bounce_time += 0.15
-        bounce_y = int(math.sin(self.bounce_time * 2.5) * 3 * self.scale)
-        bounce_x = int(math.sin(self.bounce_time * 1.8) * 2 * self.scale)
-        pet_w = self.pet_frames[0].width()
-        pet_h = self.pet_frames[0].height()
-        base_x = (self.width() - pet_w) // 2
-        base_y = (self.height() - pet_h) // 2
-        self.label.setGeometry(base_x + bounce_x, base_y + bounce_y, pet_w, pet_h)
+        if getattr(self, "_mouth_animation_active", False) or self._black_screen_active:
+            return
+
+        if self.pet_form == 'classic':
+            if not self.legacy_pet_frames:
+                return
+            self.legacy_frame_index = (self.legacy_frame_index + 1) % len(self.legacy_pet_frames)
+            self.current_frame_index = self.legacy_frame_index
+            self.current_pixmap = self.legacy_pet_frames[self.legacy_frame_index]
+            return
+
+        if not self.pet_frames:
+            return
+        self.current_frame_index = (self.current_frame_index + 1) % len(self.pet_frames)
+        self.current_pixmap = self.pet_frames[self.current_frame_index]
+
+    def switch_pet_form(self):
+        """在07版DNT完整动画与原index的pet1~pet9动画之间切换。"""
+        target = 'classic' if self.pet_form == 'dnt' else 'dnt'
+
+        if hasattr(self, 'black_screen_timer'):
+            self.black_screen_timer.stop()
+        if hasattr(self, 'black_screen_hide_timer'):
+            self.black_screen_hide_timer.stop()
+        if hasattr(self, 'mouth_timer'):
+            self.mouth_timer.stop()
+        if hasattr(self, 'dialogue_bounce_timer'):
+            self.dialogue_bounce_timer.stop()
+        self._mouth_animation_active = False
+        self._mouth_end_animation = False
+        self.dialogue_bounce_active = False
+        self._black_screen_active = False
+        self._happy_transition_active = True
+
+        self.animation_timer.stop()
+        self.startup_timer.stop()
+        self.animation_timer_started = False
+        self.pet_form = target
+
+        if target == 'classic':
+            if not self.legacy_pet_frames:
+                self.pet_form = 'dnt'
+                return
+            self.current_frame_index = 0
+            self.legacy_frame_index = 0
+            self.legacy_bounce_time = 0.0
+            self.pet_frames = list(self.legacy_pet_frames)
+            self.pet_static = self.legacy_pet_frames[0]
+            self.pet_happy = self.legacy_pet_happy if not self.legacy_pet_happy.isNull() else self.pet_static
+            self.current_pixmap = self.pet_frames[0]
+            self.startup_frames = [self.pet_happy]
+            self.startup_index = 0
+            self._show_pet_frame_fixed(self.pet_happy)
+        else:
+            if not self._load_current_outfit(self.current_outfit):
+                self.pet_form = 'classic'
+                return
+            self.pet_frames = list(self.pet_closed_frames)
+            self.pet_static = self.pet_frames[0] if self.pet_frames else QPixmap()
+            self.pet_talking = self.pet_open_frames[0] if self.pet_open_frames else self.pet_static
+            # DNT 本身仍然使用自己的动画首帧作为正常静态帧，
+            # 但“切换形态”的 1 秒过渡画面统一使用文件夹 pet-happy.png。
+            self.pet_happy = self.pet_static
+            self.current_frame_index = 0
+            self.current_pixmap = self.pet_static
+            self._load_idle_bounce_params()
+            self.startup_frames = [self._get_form_happy_pixmap()]
+            self.startup_index = 0
+            self._show_pet_frame_fixed(self._get_form_happy_pixmap())
+
+        self._update_menu_language()
+        # 与原index一致：打开/切换形态后先显示pet-happy约0.5秒。
+        self.startup_timer.start(1000)
+
+    def _update_classic_bounce(self):
+        if not self.legacy_pet_frames or self.tomato_display_active or self.is_dragging:
+            return
+        self.legacy_bounce_time += 0.15
+        bounce_y = math.sin(self.legacy_bounce_time * 2.5) * 3 * self.scale
+        bounce_x = math.sin(self.legacy_bounce_time * 1.8) * 2 * self.scale
+        self._show_pet_frame_fixed(
+            self.current_pixmap if self.current_pixmap and not self.current_pixmap.isNull() else self.legacy_pet_frames[0],
+            x_offset=bounce_x, y_offset=bounce_y
+        )
 
     def start_tomato_display(self, seconds):
         self.tomato_display_active = True
+        # 暂停黑屏计时器
+        if hasattr(self, 'black_screen_timer'):
+            self.black_screen_timer.stop()
+        if self._black_screen_active:
+            self._hide_black_screen()
         if self.is_displaying:
             self.bubble.typing_timer.stop()
             self.is_displaying = False
@@ -2213,6 +3722,8 @@ class DesktopPet(QWidget):
     def stop_tomato_display(self):
         self.tomato_display_active = False
         self.tomato_update_timer.stop()
+        # 重新启动黑屏计时器
+        self._start_black_screen_timer()
         if self.dialog_queue:
             self.bubble.hide()
             self.show_next_dialog()
@@ -2227,12 +3738,14 @@ class DesktopPet(QWidget):
         if event.button() == Qt.LeftButton:
             self.drag_pos = event.globalPos() - self.frameGeometry().topLeft()
             self.is_dragging = False
-            self.label.setPixmap(self.pet_happy)
-            self.label.setWindowOpacity(1.0)
-            self.is_bouncing = False
+            # 重置黑屏计时器
+            self._reset_black_screen_timer()
+            self._show_pet_frame_fixed(self.legacy_pet_happy if self.pet_form == 'classic' and not self.legacy_pet_happy.isNull() else self.pet_happy)
             if self.animation_timer_started:
                 self.animation_timer.stop()
         elif event.button() == Qt.RightButton:
+            # 重置黑屏计时器
+            self._reset_black_screen_timer()
             if self.control_panel is not None and self.control_panel.isVisible():
                 self.control_panel.close()
             elif self.news_window is not None and self.news_window.isVisible():
@@ -2254,22 +3767,18 @@ class DesktopPet(QWidget):
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.LeftButton:
             if self.animation_paused:
-                self.label.setPixmap(self.pet_static)
-                self.label.setWindowOpacity(1.0)
+                self._show_pet_frame_fixed(self.pet_static)
             elif self.animation_timer_started:
-                self.label.setPixmap(self.current_pixmap)
-                self.label.setWindowOpacity(1.0)
+                self._show_pet_frame_fixed(self.current_pixmap)
             else:
-                self.label.setPixmap(self.pet_frames[0])
-                self.label.setWindowOpacity(1.0)
-            self.is_bouncing = True
+                self._show_pet_frame_fixed(self.pet_frames[0] if self.pet_frames else QPixmap())
             if not self.animation_paused and self.animation_timer_started:
-                self.animation_timer.start(300)
+                self.animation_timer.start(300 if self.pet_form == 'classic' else getattr(self, 'save_animation_interval', 300))
             if not self.is_dragging:
                 pos = event.pos()
                 pet_rect = self.label.geometry()
                 if pet_rect.contains(pos):
-                    self.on_pet_click()
+                    self._on_pet_click()
             self.drag_pos = None
             self.is_dragging = False
 
@@ -2278,17 +3787,15 @@ class DesktopPet(QWidget):
             self.dialog_timer.stop()
             self.dialog_timer = None
 
-    def add_dialog(self, text, requires_confirmation=False, priority=False):
-        dialog_item = (text, requires_confirmation)
-
+    def add_dialog(self, text, requires_confirmation=False, priority=False, reminder_key=None):
+        dialog_item = (text, requires_confirmation, reminder_key)
         if priority:
-            # Scheduled reminders go to the front of the queue.
-            # IMPORTANT: do not interrupt the dialogue that is currently playing.
-            # Let the current random/ordinary dialogue finish first, then show
-            # the scheduled reminder immediately afterward.
             self.dialog_queue.insert(0, dialog_item)
         else:
             self.dialog_queue.append(dialog_item)
+
+        # 重置黑屏计时器
+        self._reset_black_screen_timer()
 
         if self.tomato_display_active:
             return
@@ -2297,69 +3804,150 @@ class DesktopPet(QWidget):
             self.show_next_dialog()
 
     def show_next_dialog(self):
+        # 整组对话第一次开始时播放张嘴和弹跳
+        if not self.dialogue_session_active:
+            self.dialogue_session_active = True
+            self._start_talking_mouth()
+
         if self.tomato_display_active:
             return
         self.clear_dialog_timer()
         if self.dialog_queue:
             self.is_displaying = True
-            text, requires_confirmation = self.dialog_queue.pop(0)
+            text, requires_confirmation, reminder_key = self.dialog_queue.pop(0)
             self.current_dialog_requires_confirmation = requires_confirmation
+            self.current_reminder_key = reminder_key
             self.bubble.start_typing(text, requires_confirmation)
         else:
             self.is_displaying = False
             self.current_dialog_requires_confirmation = False
+            self.current_reminder_key = None
+            self.dialogue_session_active = False
+            self._stop_talking_mouth()
+            self.dialogue_bounce_active = False
 
-    def on_dialog_complete(self):
-        self.clear_dialog_timer()
-        self.dialog_timer = QTimer(self)
-        self.dialog_timer.setSingleShot(True)
-        if self.dialog_queue:
-            self.dialog_timer.timeout.connect(self.show_next_dialog)
-        else:
-            self.dialog_timer.timeout.connect(self._fade_and_reset)
-        self.dialog_timer.start(
-            60000 if self.current_dialog_requires_confirmation else 3000
-        )
-
-    def start_dialog_continuation(self, text, requires_confirmation=False):
-        """同一条台词超出160px后，立即继续在下一个气泡中播放剩余内容。"""
+    def start_dialog_continuation(self, remaining, requires_confirmation=False):
+        if self.tomato_display_active:
+            return
         self.clear_dialog_timer()
         self.is_displaying = True
         self.current_dialog_requires_confirmation = requires_confirmation
+        self.bubble.start_typing(remaining, requires_confirmation)
 
-        # 下一段立即显示，不等待原来的3秒停留时间。
-        self.bubble.start_typing(text, requires_confirmation)
+    def on_dialog_complete(self):
+        self.clear_dialog_timer()
+        if self.dialog_queue:
+            self.dialog_timer = QTimer(self)
+            self.dialog_timer.setSingleShot(True)
+            self.dialog_timer.timeout.connect(self.show_next_dialog)
+            self.dialog_timer.start(3000)
+        else:
+            self._stop_talking_mouth()
+            self.dialogue_session_active = False
+            self.dialogue_bounce_active = False
+            # 需要确认的提醒由 Bubble 自己的60秒确认计时器控制消失。
+            # 未确认时会进入 reminder_dialog_timeout()，1分钟后重新出现。
+            if self.current_dialog_requires_confirmation:
+                return
+            self.dialog_timer = QTimer(self)
+            self.dialog_timer.setSingleShot(True)
+            self.dialog_timer.timeout.connect(self._fade_and_reset)
+            self.dialog_timer.start(3000)
 
     def confirm_dialog(self):
+        # 用户点击 Confirm：取消当前提醒的再次提醒计时。
+        reminder_key = self.current_reminder_key
+        if reminder_key:
+            self._pending_reminders.discard(reminder_key)
+            timer = self._reminder_retry_timers.pop(reminder_key, None)
+            if timer is not None:
+                timer.stop()
+                timer.deleteLater()
+
         self.clear_dialog_timer()
         self.bubble.dismiss()
         self.is_displaying = False
         self.current_dialog_requires_confirmation = False
+        self.current_reminder_key = None
+        self.dialogue_bounce_active = False
         if self.dialog_queue and not self.tomato_display_active:
             self.show_next_dialog()
+        else:
+            self.dialogue_session_active = False
+            self._stop_talking_mouth()
+
+    def add_reminder_dialog(self, reminder_key, dialogue_key):
+        """添加喝水/吃饭/睡觉提醒，并记录为待确认提醒。"""
+        self._pending_reminders.add(reminder_key)
+        self.add_dialog(
+            random.choice(get_dialogues(self.lang, dialogue_key)),
+            requires_confirmation=True,
+            priority=True,
+            reminder_key=reminder_key
+        )
+
+    def is_reminder_pending(self, reminder_key):
+        return reminder_key in self._pending_reminders
+
+    def reminder_dialog_timeout(self):
+        """提醒显示1分钟仍未确认：消失，空1分钟后再次出现。"""
+        reminder_key = self.current_reminder_key
+        self.bubble.dismiss()
+        self.is_displaying = False
+        self.current_dialog_requires_confirmation = False
+        self.current_reminder_key = None
+        self.dialogue_bounce_active = False
+        self.dialogue_session_active = False
+        self._stop_talking_mouth()
+
+        if not reminder_key or reminder_key not in self._pending_reminders:
+            return
+
+        old_timer = self._reminder_retry_timers.pop(reminder_key, None)
+        if old_timer is not None:
+            old_timer.stop()
+            old_timer.deleteLater()
+
+        retry_timer = QTimer(self)
+        retry_timer.setSingleShot(True)
+        retry_timer.timeout.connect(lambda key=reminder_key: self._retry_reminder(key))
+        self._reminder_retry_timers[reminder_key] = retry_timer
+        retry_timer.start(60000)
+
+    def _retry_reminder(self, reminder_key):
+        timer = self._reminder_retry_timers.pop(reminder_key, None)
+        if timer is not None:
+            timer.deleteLater()
+        if reminder_key not in self._pending_reminders:
+            return
+        dialogue_map = {
+            'drink': 'drink',
+            'lunch': 'lunch',
+            'dinner': 'dinner',
+            'sleep': 'sleep'
+        }
+        dialogue_key = dialogue_map.get(reminder_key)
+        if dialogue_key:
+            self.add_reminder_dialog(reminder_key, dialogue_key)
 
     def _fade_and_reset(self):
         self.bubble.fade_out()
         self.is_displaying = False
         self.current_dialog_requires_confirmation = False
         self.dialog_timer = None
+        # 重新启动黑屏计时器
+        self._start_black_screen_timer()
 
-    def on_pet_click(self):
+    def _on_pet_click(self):
         if self.auto_dialog_enabled:
             self.add_dialog(random.choice(get_dialogues(self.lang, 'click')))
 
     def flirt(self):
         self.add_dialog(random.choice(get_dialogues(self.lang, 'flirt')))
 
-    def random_dialog(self):
-        # Random dialogue can play normally, but it never replaces an active
-        # reminder or a dialogue that is already being displayed.
-        if (
-            self.auto_dialog_enabled
-            and not self.tomato_display_active
-            and not self.is_displaying
-            and not self.current_dialog_requires_confirmation
-        ):
+    def _random_dialog(self):
+        if (self.auto_dialog_enabled and not self.tomato_display_active and
+            not self.is_displaying and not self.current_dialog_requires_confirmation):
             self.add_dialog(random.choice(get_dialogues(self.lang, 'random')))
 
     def show_note(self):
@@ -2372,8 +3960,7 @@ class DesktopPet(QWidget):
         self.note_window.raise_()
         self.note_window.note_edit.setFocus()
 
-    def repeat_random_note(self):
-        """每小时从 note.txt 随机抽取一句，并让角色一起复读。"""
+    def _repeat_random_note(self):
         self.note_repeat_elapsed += 1
         if self.note_repeat_elapsed < 60:
             return
@@ -2383,7 +3970,6 @@ class DesktopPet(QWidget):
         if not note_text.strip():
             return
 
-        # 空行作为分隔符；每一行视为一句话。若一行过长也保持完整，不截断。
         notes = [line.strip() for line in note_text.splitlines() if line.strip()]
         if not notes:
             return
@@ -2413,6 +3999,8 @@ class DesktopPet(QWidget):
         self.news_window.update_position()
         self.news_window.show()
         self.news_window.raise_()
+        # 仅 DNT 桌宠：打开今日新闻时显示黑屏 5 秒；普通桌宠不受影响。
+        self._show_news_black_screen()
 
     def show_midnight_news(self):
         if self.midnight_window is None:
@@ -2420,6 +4008,82 @@ class DesktopPet(QWidget):
         self.midnight_window.update_position()
         self.midnight_window.show()
         self.midnight_window.raise_()
+        # 仅 DNT 桌宠：打开午夜新闻时显示黑屏 5 秒；普通桌宠不受影响。
+        self._show_news_black_screen()
+
+    def _show_news_black_screen(self):
+        """打开新闻面板时，仅 DNT 桌宠额外黑屏 5 秒。"""
+        if getattr(self, 'pet_form', 'dnt') == 'classic':
+            return
+        if getattr(self, '_happy_transition_active', False):
+            return
+        # 新闻打开不应打断正在进行的对话、番茄钟、嘴巴动画或拖拽。
+        if (getattr(self, 'is_displaying', False) or
+            getattr(self, 'tomato_display_active', False) or
+            getattr(self, '_mouth_animation_active', False) or
+            getattr(self, 'is_dragging', False)):
+            return
+        if hasattr(self, 'black_screen_timer'):
+            self.black_screen_timer.stop()
+        self._show_black_screen()
+        if getattr(self, '_black_screen_active', False):
+            self.black_screen_hide_timer.stop()
+            self.black_screen_hide_timer.start(5000)
+
+    def create_menu(self):
+        self.menu = QMenu(self)
+        self.control_action = QAction(self)
+        self.control_action.triggered.connect(self.show_control_panel)
+        self.note_action = QAction(self)
+        self.note_action.triggered.connect(self.show_note)
+        self.flirt_action = QAction(self)
+        self.flirt_action.triggered.connect(self.flirt)
+        self.news_action = QAction(self)
+        self.news_action.triggered.connect(self.show_news)
+        self.midnight_action = QAction(self)
+        self.midnight_action.triggered.connect(self.show_midnight_news)
+
+        self.costume_menu = QMenu(self)
+        self.costume_actions = []
+        for outfit_no in range(1, 8):  # 1-7套服装
+            action = QAction(str(outfit_no), self)
+            action.setCheckable(True)
+            action.setEnabled(outfit_no in self.available_outfits)
+            action.triggered.connect(lambda checked=False, n=outfit_no: self.change_outfit(n))
+            self.costume_menu.addAction(action)
+            self.costume_actions.append(action)
+        if self.costume_actions and self.current_outfit <= len(self.costume_actions):
+            self.costume_actions[self.current_outfit - 1].setChecked(True)
+
+        self.toggle_animation_action = QAction(self)
+        self.toggle_animation_action.triggered.connect(self._toggle_animation)
+        self.toggle_visibility_action = QAction(self)
+        self.toggle_visibility_action.triggered.connect(self._toggle_visibility_from_menu)
+        self.toggle_auto_dialog_action = QAction(self)
+        self.toggle_auto_dialog_action.triggered.connect(self._toggle_auto_dialog)
+        self.lang_action = QAction(self)
+        self.lang_action.triggered.connect(self.switch_language)
+        self.quit_action = QAction(self)
+        self.quit_action.triggered.connect(self.quit_app)
+
+        self.menu.addAction(self.control_action)
+        self.menu.addAction(self.note_action)
+        self.menu.addMenu(self.costume_menu)
+        self.menu.addAction(self.flirt_action)
+        self.menu.addAction(self.news_action)
+        self.menu.addAction(self.midnight_action)
+        self.pet_form_action = QAction(self)
+        self.pet_form_action.triggered.connect(self.switch_pet_form)
+        self.menu.addAction(self.pet_form_action)
+        self.menu.addAction(self.toggle_animation_action)
+        self.menu.addAction(self.toggle_visibility_action)
+        self.menu.addAction(self.toggle_auto_dialog_action)
+        self.menu.addSeparator()
+        self.menu.addAction(self.lang_action)
+        self.menu.addSeparator()
+        self.menu.addAction(self.quit_action)
+
+        self._update_menu_language()
 
     def quit_app(self):
         if hasattr(self, 'tray_icon'):
@@ -2431,14 +4095,26 @@ class DesktopPet(QWidget):
         self._close_timer.start(5000)
 
     def _prepare_close(self):
-        self.label.setPixmap(self.pet_happy)
-        self.label.setWindowOpacity(1.0)
+        # 关闭时彻底关闭黑屏，并统一显示文件夹中的 pet-happy.png 1 秒。
+        if hasattr(self, 'black_screen_timer'):
+            self.black_screen_timer.stop()
+        if hasattr(self, 'black_screen_hide_timer'):
+            self.black_screen_hide_timer.stop()
+        self._black_screen_active = False
+        self._happy_transition_active = True
+        happy = self._get_form_happy_pixmap()
+        if happy is not None and not happy.isNull():
+            self.current_pixmap = happy
+            self._show_pet_frame_fixed(happy)
+            self.label.raise_()
+            self.show()
+            self.raise_()
         self.animation_timer.stop()
         self.startup_timer.stop()
         self.clear_dialog_timer()
         if hasattr(self, "note_repeat_timer"):
             self.note_repeat_timer.stop()
-        QTimer.singleShot(3000, self._really_quit)
+        QTimer.singleShot(1000, self._really_quit)
 
     def _really_quit(self):
         if self.control_panel:
@@ -2454,9 +4130,12 @@ class DesktopPet(QWidget):
         self.close()
         QApplication.quit()
 
+
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
     pet = DesktopPet()
     pet.show()
+    # 程序首次启动：强制先显示文件夹中的 pet-happy.png 1 秒。
+    QTimer.singleShot(0, pet._start_happy_transition)
     sys.exit(app.exec_())
