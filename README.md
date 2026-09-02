@@ -26,7 +26,7 @@ PREVIEW
 
 https://github.com/user-attachments/assets/1976eea6-9234-41fb-9144-256ac8ccacea
 
-Uploading 屏幕录制 2026-09-02 140800.mp4…
+https://github.com/user-attachments/assets/c6077882-d0bc-42c3-88cf-bf14ebfdd5a3
 
 ——
 
