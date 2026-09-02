@@ -4,12 +4,17 @@
 
 Instructions
 
-Left-click on the pet to trigger a dialogue. Right-click to display the menu and exit. To exit the Control Panel and News interface and notes panel, right-click on the pet as well. You can switch between Chinese and English. If you find it uncomfortable, you can pause, hide the pet, and pause auto-dialogue. This will pause timed interval dialogues and click-triggered dialogues. There are fixed-time reminders for drinking water, eating, and sleeping.The desktop pet comes with a built-in auto-start feature. If you do not need it, you can disable or enable it manually in the system settings.Right-click the menu and select **Notes** to record your daily inspirations or important events.
+Left-click on the pet to trigger a dialogue. Right-click to display the menu and exit. To exit the Control Panel and News interface and notes panel, right-click on the pet as well. You can switch between Chinese and English. If you find it uncomfortable, you can pause, hide the pet, and pause auto-dialogue. This will pause timed interval dialogues and click-triggered dialogues. There are fixed-time reminders for drinking water, eating, and sleeping.The desktop pet comes with a built-in auto-start feature. If you do not need it, you can disable or enable it manually in the system settings.Right-click the menu and select **Notes** to record your daily inspirations or important events.Right-click to switch between different pet forms. **Form 2** has 7 different outfits.
 
 Release Links/下载链接
 https://github.com/ternatapinellia/defernull-tenna-deskpet/releases/tag/v4.0
 
-下载release界面zip后解压，直接双击desktoppet.exe便可使用。
+下载release界面zip后解压，直接双击desktoppet.exe便可使用。备注：下载后打不开或者打开后立刻关闭请检查电脑安全中心和防火墙是否有放行该软件，大概率被防火墙杀了。
+
+After downloading the ZIP file from the Release page, extract it and simply double-click **DesktopPet.exe** to use the application.
+
+**Note:** If the application cannot be opened after downloading, or closes immediately after launching, please check your computer’s **Windows Security** and **firewall settings** to make sure the application is allowed. In most cases, it is likely being blocked or terminated by the firewall.
+
 
 TIPS:作者后续可能会再度更新对话词条或增设功能，目前版本功能已经完整。
 
