@@ -15,7 +15,7 @@ from PyQt5.QtWidgets import (QApplication, QWidget, QLabel, QMenu,
                              QSpinBox, QCheckBox, QHBoxLayout, QAction,
                              QFrame, QVBoxLayout, QSystemTrayIcon,
                              QScrollArea, QPlainTextEdit)
-from PyQt5.QtCore import Qt, QTimer, QPropertyAnimation, QPoint, QTime, QEasingCurve, QDateTime
+from PyQt5.QtCore import Qt, QTimer, QPropertyAnimation, QPoint, QTime, QEasingCurve, QDateTime, QEvent
 from PyQt5.QtGui import QPixmap, QPainter, QFont, QColor, QPalette, QIcon, QImage
 
 # 导入对话配置
@@ -386,8 +386,27 @@ class BubbleWidget(QWidget):
         self.label.setWordWrap(True)
         self.label.setAlignment(Qt.AlignLeft | Qt.AlignTop)
         self.label.setStyleSheet("background: transparent; color: #2c3e50;")
-        self.normal_font = QFont("Microsoft YaHei", int(14 * scale))
-        self.big_font = QFont("Microsoft YaHei", int(72 * scale))
+        # Keep the original visual size while compensating for Windows/Qt DPI scaling.
+        # The pet's own screen-resolution scale is preserved; only the font's logical
+        # point size is adjusted so 125%/150%/200% Windows scaling does not enlarge
+        # the bubble text unexpectedly.
+        dpi_scale = 1.0
+        try:
+            screen = QApplication.primaryScreen()
+            if screen is not None:
+                dpi = float(screen.logicalDotsPerInch())
+                if dpi > 0:
+                    dpi_scale = max(1.0, dpi / 96.0)
+        except Exception:
+            dpi_scale = 1.0
+
+        normal_point_size = max(1.0, (18.0 * scale) / dpi_scale)
+        big_point_size = max(1.0, (72.0 * scale) / dpi_scale)
+
+        self.normal_font = QFont("Microsoft YaHei")
+        self.normal_font.setPointSizeF(normal_point_size)
+        self.big_font = QFont("Microsoft YaHei")
+        self.big_font.setPointSizeF(big_point_size)
         self.label.setFont(self.normal_font)
 
         self.full_text = ""
@@ -526,19 +545,29 @@ class BubbleWidget(QWidget):
                 self.is_typing = False
                 self.is_complete = True
                 if remaining:
-                    self.parent().start_dialog_continuation(remaining, self.current_requires_confirmation)
+                    parent = self.parent()
+                    if parent is not None:
+                        parent.start_dialog_continuation(
+                            remaining,
+                            getattr(self, "current_requires_confirmation", False)
+                        )
                 else:
-                    self.parent().on_dialog_complete()
+                    parent = self.parent()
+                    if parent is not None:
+                        parent.on_dialog_complete()
             else:
                 self.label.setText(current_text)
         else:
             self.typing_timer.stop()
             self.is_typing = False
             self.is_complete = True
-            self.parent().on_dialog_complete()
+            parent = self.parent()
+            if parent is not None:
+                parent.on_dialog_complete()
 
     def start_typing(self, text, requires_confirmation=False):
         self.label.setFont(self.normal_font)
+        self.current_requires_confirmation = bool(requires_confirmation)
         self.full_text = text
         self.char_index = 0
         self.label.clear()
@@ -2531,6 +2560,12 @@ class DesktopPet(QWidget):
         self.black_screen_hide_timer.setSingleShot(True)
         self.black_screen_hide_timer.timeout.connect(self._hide_black_screen)
 
+        # 桌宠缩放：Ctrl + 鼠标滚轮，仅在鼠标位于桌宠上时生效。
+        self.pet_zoom = 1.0
+        self.pet_zoom_min = 0.5
+        self.pet_zoom_max = 2.0
+        self.pet_zoom_step = 0.1
+
         self._load_current_outfit(self.current_outfit)
 
         self.pet_frames = list(self.pet_closed_frames)
@@ -2559,6 +2594,7 @@ class DesktopPet(QWidget):
         self.label = FadeLabel(self)
         self.label.setAlignment(Qt.AlignCenter)
         self.label.setWindowOpacity(1.0)
+        self.label.installEventFilter(self)
         self._show_pet_frame_fixed(self.pet_static)
 
         self.bubble = BubbleWidget(self)
@@ -2662,9 +2698,10 @@ class DesktopPet(QWidget):
             for pixmap in frames:
                 if pixmap is None or pixmap.isNull():
                     continue
+                zoom = float(getattr(self, "pet_zoom", 1.0))
                 result.append(pixmap.scaled(
-                    int(pixmap.width() * self.scale),
-                    int(pixmap.height() * self.scale),
+                    max(1, int(round(pixmap.width() * self.scale * zoom))),
+                    max(1, int(round(pixmap.height() * self.scale * zoom))),
                     Qt.KeepAspectRatio, Qt.SmoothTransformation
                 ))
             return result
@@ -2763,7 +2800,7 @@ class DesktopPet(QWidget):
             not self._mouth_animation_active and
             not self._black_screen_active and
             not self.is_dragging):
-            self.black_screen_timer.start(1800000)  # 1800秒后显示
+            self.black_screen_timer.start(900000)  # 900秒后显示
 
     def _show_black_screen(self):
         """显示黑屏覆盖层：仅 DNT 形态允许显示。"""
@@ -2834,14 +2871,18 @@ class DesktopPet(QWidget):
         except Exception:
             px, py = 0.0, 0.0
 
-        # base_pixmap 已经按 self.scale 缩放，因此 dnt.save 中
-        # 的原始像素位置也必须同步缩放。
-        x = int(round(px * self.scale))
-        y = int(round(py * self.scale))
+        # base_pixmap 同时已经按 self.scale 和当前 pet_zoom 缩放。
+        # 黑屏覆盖层必须使用完全相同的缩放倍率，否则桌宠放大/缩小时，
+        # 黑屏的位置和尺寸会停留在原来的倍率。
+        zoom = float(getattr(self, "pet_zoom", 1.0))
+        effective_scale = self.scale * zoom
+
+        x = int(round(px * effective_scale))
+        y = int(round(py * effective_scale))
 
         scaled_black = black.scaled(
-            max(1, int(round(black.width() * self.scale))),
-            max(1, int(round(black.height() * self.scale))),
+            max(1, int(round(black.width() * effective_scale))),
+            max(1, int(round(black.height() * effective_scale))),
             Qt.IgnoreAspectRatio,
             Qt.SmoothTransformation
         )
@@ -3734,6 +3775,112 @@ class DesktopPet(QWidget):
         m, s = divmod(seconds, 60)
         return f"{m:02d}:{s:02d}"
 
+    def _rescale_classic_pet(self):
+        """按当前 pet_zoom 重新缩放普通桌宠资源。"""
+        zoom = float(getattr(self, "pet_zoom", 1.0))
+        frames = []
+        for i in range(1, 10):
+            pm = QPixmap(resource_path(f"pet{i}.png"))
+            if not pm.isNull():
+                frames.append(pm.scaled(
+                    max(1, int(round(pm.width() * self.scale * zoom))),
+                    max(1, int(round(pm.height() * self.scale * zoom))),
+                    Qt.KeepAspectRatio,
+                    Qt.SmoothTransformation
+                ))
+        if not frames:
+            fallback = QPixmap(resource_path("pet.png"))
+            if not fallback.isNull():
+                frames = [fallback.scaled(
+                    max(1, int(round(fallback.width() * self.scale * zoom))),
+                    max(1, int(round(fallback.height() * self.scale * zoom))),
+                    Qt.KeepAspectRatio,
+                    Qt.SmoothTransformation
+                )]
+        happy = QPixmap(resource_path("pet-happy.png"))
+        if not happy.isNull():
+            self.legacy_pet_happy = happy.scaled(
+                max(1, int(round(happy.width() * self.scale * zoom))),
+                max(1, int(round(happy.height() * self.scale * zoom))),
+                Qt.KeepAspectRatio,
+                Qt.SmoothTransformation
+            )
+        if frames:
+            self.legacy_pet_frames = frames
+            self.legacy_frame_index %= len(frames)
+            self.current_pixmap = frames[self.legacy_frame_index]
+
+    def _set_pet_zoom(self, zoom):
+        """改变桌宠显示倍率，保持桌宠中心位置不变。"""
+        zoom = max(
+            float(getattr(self, "pet_zoom_min", 0.5)),
+            min(float(getattr(self, "pet_zoom_max", 2.0)), float(zoom))
+        )
+        old_zoom = float(getattr(self, "pet_zoom", 1.0))
+        if abs(zoom - old_zoom) < 0.0001:
+            return
+
+        old_frame_index = getattr(self, "current_frame_index", 0)
+        old_mouth_index = getattr(self, "current_mouth_frame_index", 0)
+        old_legacy_index = getattr(self, "legacy_frame_index", 0)
+        was_talking = bool(getattr(self, "is_talking_mouth_open", False))
+        self.pet_zoom = zoom
+
+        if getattr(self, "pet_form", "dnt") == "classic":
+            self._rescale_classic_pet()
+            if self.legacy_pet_frames:
+                self.current_pixmap = self.legacy_pet_frames[
+                    old_legacy_index % len(self.legacy_pet_frames)
+                ]
+        else:
+            current_outfit = getattr(self, "current_outfit", None)
+            if current_outfit is not None:
+                self._load_current_outfit(current_outfit)
+                if self.pet_closed_frames:
+                    self.current_frame_index = old_frame_index % len(self.pet_closed_frames)
+                if self.pet_open_frames:
+                    self.current_mouth_frame_index = old_mouth_index % len(self.pet_open_frames)
+
+        if self.pet_form == "classic":
+            self._show_pet_frame_fixed(self.current_pixmap)
+        elif was_talking and self.pet_open_frames:
+            self.is_talking_mouth_open = True
+            self._show_pet_frame_fixed(
+                self.pet_open_frames[
+                    self.current_mouth_frame_index % len(self.pet_open_frames)
+                ]
+            )
+        elif self.pet_closed_frames:
+            self.is_talking_mouth_open = False
+            self._show_pet_frame_fixed(
+                self.pet_closed_frames[
+                    self.current_frame_index % len(self.pet_closed_frames)
+                ]
+            )
+        else:
+            self._show_pet_frame_fixed(self.pet_static)
+
+        # 如果缩放桌宠时正处于黑屏状态，黑屏覆盖层也必须按照新的
+        # 桌宠倍率重新合成，否则黑屏会继续停留在缩放前的位置和尺寸。
+        if getattr(self, "_black_screen_active", False) and self.pet_form == "dnt":
+            outfit = self.role_renderer.outfits.get(self.current_outfit, {})
+            combined = self._compose_black_screen_overlay(self.current_pixmap, outfit)
+            if combined is not None and not combined.isNull():
+                self._set_mouth_frame_centered(combined)
+
+    def eventFilter(self, obj, event):
+        if obj is getattr(self, "label", None) and event.type() == QEvent.Wheel:
+            if event.modifiers() & Qt.ControlModifier:
+                delta = event.angleDelta().y()
+                if delta:
+                    steps = 1 if delta > 0 else -1
+                    self._set_pet_zoom(
+                        getattr(self, "pet_zoom", 1.0)
+                        + steps * getattr(self, "pet_zoom_step", 0.1)
+                    )
+                return True
+        return super().eventFilter(obj, event)
+
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
             self.drag_pos = event.globalPos() - self.frameGeometry().topLeft()
@@ -3756,6 +3903,19 @@ class DesktopPet(QWidget):
                 self.note_window.hide()
             else:
                 self.menu.exec_(event.globalPos())
+
+    def wheelEvent(self, event):
+        if event.modifiers() & Qt.ControlModifier:
+            delta = event.angleDelta().y()
+            if delta:
+                steps = 1 if delta > 0 else -1
+                self._set_pet_zoom(
+                    getattr(self, "pet_zoom", 1.0)
+                    + steps * getattr(self, "pet_zoom_step", 0.1)
+                )
+                event.accept()
+                return
+        event.ignore()
 
     def mouseMoveEvent(self, event):
         if event.buttons() == Qt.LeftButton and self.drag_pos is not None:
