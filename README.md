@@ -7,7 +7,7 @@ Instructions
 Left-click on the pet to trigger a dialogue. Right-click to display the menu and exit. To exit the Control Panel and News interface and notes panel, right-click on the pet as well. You can switch between Chinese and English. If you find it uncomfortable, you can pause, hide the pet, and pause auto-dialogue. This will pause timed interval dialogues and click-triggered dialogues. There are fixed-time reminders for drinking water, eating, and sleeping.The desktop pet comes with a built-in auto-start feature. If you do not need it, you can disable or enable it manually in the system settings.Right-click the menu and select **Notes** to record your daily inspirations or important events.Right-click to switch between different pet forms. **Form 2** has 7 different outfits.Hold Ctrl and scroll the mouse wheel over the desktop pet to adjust its size.
 
 Release Links/下载链接
-https://github.com/ternatapinellia/defernull-tenna-deskpet/releases/tag/v4.1
+https://github.com/ternatapinellia/defernull-tenna-deskpet/releases/tag/v4.2
 
 下载release界面zip后解压，直接双击desktoppet.exe便可使用。备注：下载后打不开或者打开后立刻关闭请检查电脑安全中心和防火墙是否有放行该软件，大概率被防火墙杀了。
 
@@ -31,15 +31,13 @@ https://github.com/user-attachments/assets/1976eea6-9234-41fb-9144-256ac8ccacea
 
 ——
 
-v4.1更新
+v4.2更新
 
-增加了鼠标滚轮+ctrl调整桌宠大小的功能，修复了原4.0版本随着window的缩放更改，对话框气泡内文本大小也会更改并且导致闪退的问题。
+调整了气泡目前可以跟随桌宠移动也可以自行选择固定在右下角，调整了控制面板等可能不出现的问题，调整了英文内容的一些小错误。
 
 理论上不会再进行更新。
 
 存在的小问题：
-
-1.对话框气泡固定在电脑右下角，无法移动和更改位置
 
 2.新闻切换的时候会卡顿30s左右，届时最好不要进行任何操作
 
@@ -47,13 +45,19 @@ v4.1更新
 
 4.控制面板，新闻，便签窗口位置不固定，可能会发生随机位移
 
-5.使用番茄钟，也就是专注模式开始倒计时的时候，桌宠可能不会进行动画演出
+5.使用番茄钟，也就是专注模式开始倒计时的时候，桌宠不会进行动画演出
 
 6.英文版新闻界面会出现单条无法完全显示英文字符的情况。
 
 7.午夜新闻可能无法筛选到既定的犯罪新闻因而转而使用内置，大概是运气问题
 
 8.午夜新闻，英文版的今日新闻和午夜新闻，共用一个api，该api有每日调用的次数上限，达到上限后会直接使用内置。
+
+——
+
+v4.1更新
+
+增加了鼠标滚轮+ctrl调整桌宠大小的功能，修复了原4.0版本随着window的缩放更改，对话框气泡内文本大小也会更改并且导致闪退的问题。
 
 ——
 
