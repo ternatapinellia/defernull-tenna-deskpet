@@ -573,8 +573,13 @@ class BubbleWidget(QWidget):
         self.label.clear()
         self.is_typing = True
         self.is_complete = False
-        self.move_to_bottom_right()
         self.show()
+        parent = self.parent()
+        if parent is not None:
+            if getattr(parent, "bubble_mode", "follow") == "fixed":
+                self.move_to_bottom_right()
+            elif hasattr(parent, "update_bubble_position"):
+                parent.update_bubble_position()
         self.setWindowOpacity(1.0)
         self.fade_animation.stop()
         self.hide_confirmation_button()
@@ -588,8 +593,13 @@ class BubbleWidget(QWidget):
         self.full_text = text
         self.is_typing = False
         self.is_complete = True
-        self.move_to_bottom_right()
         self.show()
+        parent = self.parent()
+        if parent is not None:
+            if getattr(parent, "bubble_mode", "follow") == "fixed":
+                self.move_to_bottom_right()
+            elif hasattr(parent, "update_bubble_position"):
+                parent.update_bubble_position()
         self.setWindowOpacity(1.0)
         self.fade_animation.stop()
         self.hide_confirmation_button()
@@ -641,30 +651,48 @@ class BasePanel(QWidget):
         super().paintEvent(event)
 
     def update_position(self):
-        if self.panel_type == "control":
-            self.move(10, 10)
-            self.show()
-            self.raise_()
+        """按照气泡的屏幕坐标定位面板；只在桌宠窗口真正移动时同步。"""
+        if self.parent_pet is None or not hasattr(self.parent_pet, "bubble"):
             return
 
         bubble = self.parent_pet.bubble
-        if bubble.isVisible():
-            bx, by = bubble.get_bubble_position()
-            if self.panel_type == "news":
-                panel_x = bx + (bubble.width() - self.width()) // 2 - 800
-            elif self.panel_type == "midnight":
-                panel_x = bx + (bubble.width() - self.width()) // 2 - 1200
-            elif self.panel_type == "note":
-                panel_x = bx + (bubble.width() - self.width()) // 2
-            else:
-                panel_x = bx + (bubble.width() - self.width()) // 2
-            panel_y = by - self.height() - int(20 * self.scale)
 
-            if not self._position_fixed:
-                self._fixed_x = panel_x
-                self._fixed_y = panel_y
-                self._position_fixed = True
-            self.move(self._fixed_x, self._fixed_y)
+        # 使用气泡原本的定位逻辑作为唯一坐标基准。
+        if hasattr(self.parent_pet, "update_bubble_position"):
+            self.parent_pet.update_bubble_position()
+
+        bx, by = bubble.get_bubble_position()
+
+        # 控制面板、便签、今日新闻使用完全相同的横向定位逻辑。
+        # 午夜新闻保持原来的独立定位。
+        if self.panel_type in ("control", "note", "news"):
+            panel_x = bx + (bubble.width() - self.width()) // 2 - 800
+        elif self.panel_type == "midnight":
+            panel_x = bx + (bubble.width() - self.width()) // 2 - 1200
+        else:
+            panel_x = bx + (bubble.width() - self.width()) // 2
+
+        panel_y = by - self.height() - int(20 * self.scale)
+
+        # 完整显示：把最终位置限制在当前屏幕可用区域内。
+        screen = QApplication.screenAt(QPoint(
+            int(bx + bubble.width() / 2),
+            int(by + bubble.height() / 2)
+        ))
+        if screen is None:
+            screen = QApplication.primaryScreen()
+
+        if screen is not None:
+            rect = screen.availableGeometry()
+            max_x = rect.right() - self.width() + 1
+            max_y = rect.bottom() - self.height() + 1
+            panel_x = max(rect.left(), min(panel_x, max_x))
+            panel_y = max(rect.top(), min(panel_y, max_y))
+
+        self.move(int(panel_x), int(panel_y))
+        self._fixed_x = int(panel_x)
+        self._fixed_y = int(panel_y)
+        self._position_fixed = True
 
 
 # ---------- 新闻窗口 ----------
@@ -2597,6 +2625,9 @@ class DesktopPet(QWidget):
         self.label.installEventFilter(self)
         self._show_pet_frame_fixed(self.pet_static)
 
+        # 气泡位置模式：follow = 跟随桌宠，fixed = 固定右下角
+        self.bubble_mode = "follow"
+
         self.bubble = BubbleWidget(self)
 
         # 对话张嘴定时器 - 0.1秒切换闭嘴和开口
@@ -2967,6 +2998,46 @@ class DesktopPet(QWidget):
         painter.end()
         return canvas
 
+    def update_bubble_position(self):
+        """跟随模式下，让独立气泡窗口跟随桌宠。"""
+        if getattr(self, "bubble_mode", "follow") != "follow":
+            return
+        if not hasattr(self, "bubble") or not hasattr(self, "label"):
+            return
+        pet_x = self.label.x()
+        pet_y = self.label.y()
+        pet_w = self.label.width()
+        # 保持当前基础位置：向左 300px、向下 200px。
+        # 桌宠1（classic）在此基础上再下移 200px；
+        # 桌宠2（dnt）在此基础上上移 100px。
+        scale = float(getattr(self, "scale", 1.0))
+        offset_x = int(round(300 * scale))
+        base_offset_y = 200
+
+        if getattr(self, "pet_form", "dnt") == "classic":
+            extra_offset_y = 200
+        else:
+            extra_offset_y = -100
+
+        offset_y = int(round((base_offset_y + extra_offset_y) * scale))
+        bx = pet_x + (pet_w - self.bubble.width()) // 2 - offset_x
+        by = pet_y - self.bubble.height() - int(20 * scale) + offset_y
+        self.bubble.move(self.mapToGlobal(QPoint(bx, by)))
+
+    def _update_following_panels(self):
+        """桌宠窗口真正移动后，同步已打开的独立面板。"""
+        for attr_name in ("control_panel", "note_window", "news_window", "midnight_window"):
+            panel = getattr(self, attr_name, None)
+            if panel is not None and panel.isVisible():
+                panel.update_position()
+
+    def moveEvent(self, event):
+        """桌宠主窗口移动时，同步移动气泡。"""
+        super().moveEvent(event)
+        if hasattr(self, "bubble"):
+            self.update_bubble_position()
+        self._update_following_panels()
+
     def _show_pet_frame_fixed(self, pixmap, x_offset=0.0, y_offset=0.0,
                               scale_x=1.0, scale_y=1.0):
         """统一显示角色帧：永远使用同一 QLabel 尺寸。"""
@@ -2990,6 +3061,9 @@ class DesktopPet(QWidget):
         self.label.setPixmap(canvas)
         self.label.setWindowOpacity(1.0)
         self.label.update()
+        if (hasattr(self, "bubble") and self.bubble.isVisible()
+                and getattr(self, "bubble_mode", "follow") == "follow"):
+            self.update_bubble_position()
 
     # ==================== 闲置弹跳动画 ====================
     def _update_idle_bounce(self):
@@ -3426,6 +3500,10 @@ class DesktopPet(QWidget):
             self.flirt_action.setText("Flirt")
             self.news_action.setText("Today's News")
             self.midnight_action.setText("Midnight News")
+            self.bubble_mode_action.setText(
+                "Bubble: Fixed Bottom-Right" if self.bubble_mode == "follow"
+                else "Bubble: Follow Pet"
+            )
             self.pet_form_action.setText("Switch to Classic Pet" if self.pet_form == 'dnt' else "Switch to DNT Pet")
             self.toggle_animation_action.setText("Pause Animation" if not self.animation_paused else "Start Animation")
             self.toggle_visibility_action.setText("Hide Pet" if self.isVisible() else "Show Pet")
@@ -3455,6 +3533,10 @@ class DesktopPet(QWidget):
             self.flirt_action.setText("调情")
             self.news_action.setText("今日新闻")
             self.midnight_action.setText("午夜新闻")
+            self.bubble_mode_action.setText(
+                "气泡固定右下角" if self.bubble_mode == "follow"
+                else "气泡跟随桌宠"
+            )
             self.pet_form_action.setText("切换到桌宠1" if self.pet_form == 'dnt' else "切换到桌宠2")
             self.toggle_animation_action.setText("暂停动画" if not self.animation_paused else "开始动画")
             self.toggle_visibility_action.setText("显示/隐藏" if self.isVisible() else "显示/隐藏")
@@ -3666,6 +3748,12 @@ class DesktopPet(QWidget):
             self.legacy_frame_index = (self.legacy_frame_index + 1) % len(self.legacy_pet_frames)
             self.current_frame_index = self.legacy_frame_index
             self.current_pixmap = self.legacy_pet_frames[self.legacy_frame_index]
+            # 桌宠1（Classic）切帧后立即重绘，确保 pet1~pet9 动画正常播放。
+            # 位置、气泡跟随和缩放仍由统一的固定画布处理。
+            if not self._happy_transition_active:
+                self._show_pet_frame_fixed(
+                    self.current_pixmap
+                )
             return
 
         if not self.pet_frames:
@@ -3923,6 +4011,7 @@ class DesktopPet(QWidget):
             if distance > 5:
                 self.is_dragging = True
                 self.move(event.globalPos() - self.drag_pos)
+                self.update_bubble_position()
 
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.LeftButton:
@@ -3977,6 +4066,7 @@ class DesktopPet(QWidget):
             text, requires_confirmation, reminder_key = self.dialog_queue.pop(0)
             self.current_dialog_requires_confirmation = requires_confirmation
             self.current_reminder_key = reminder_key
+            self.update_bubble_position()
             self.bubble.start_typing(text, requires_confirmation)
         else:
             self.is_displaying = False
@@ -4190,6 +4280,17 @@ class DesktopPet(QWidget):
             self.black_screen_hide_timer.stop()
             self.black_screen_hide_timer.start(5000)
 
+    def _toggle_bubble_mode(self):
+        """在右下角固定和跟随桌宠两种气泡位置之间切换。"""
+        if getattr(self, "bubble_mode", "follow") == "follow":
+            self.bubble_mode = "fixed"
+            self.bubble.move_to_bottom_right()
+        else:
+            self.bubble_mode = "follow"
+            self.update_bubble_position()
+
+        self._update_menu_language()
+
     def create_menu(self):
         self.menu = QMenu(self)
         self.control_action = QAction(self)
@@ -4202,6 +4303,8 @@ class DesktopPet(QWidget):
         self.news_action.triggered.connect(self.show_news)
         self.midnight_action = QAction(self)
         self.midnight_action.triggered.connect(self.show_midnight_news)
+        self.bubble_mode_action = QAction(self)
+        self.bubble_mode_action.triggered.connect(self._toggle_bubble_mode)
 
         self.costume_menu = QMenu(self)
         self.costume_actions = []
@@ -4232,6 +4335,7 @@ class DesktopPet(QWidget):
         self.menu.addAction(self.flirt_action)
         self.menu.addAction(self.news_action)
         self.menu.addAction(self.midnight_action)
+        self.menu.addAction(self.bubble_mode_action)
         self.pet_form_action = QAction(self)
         self.pet_form_action.triggered.connect(self.switch_pet_form)
         self.menu.addAction(self.pet_form_action)
