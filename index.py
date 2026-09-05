@@ -83,6 +83,15 @@ def resource_path(relative_path):
         base_path = os.path.abspath(".")
     return os.path.join(base_path, relative_path)
 
+
+def writable_app_path(relative_path):
+    """返回可写入的程序数据路径。PyInstaller 打包后不能把状态写进 _MEIPASS。"""
+    if getattr(sys, "frozen", False):
+        base_path = os.path.dirname(os.path.abspath(sys.executable))
+    else:
+        base_path = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(base_path, relative_path)
+
 # ---------- Windows 开机自启 ----------
 def set_windows_autostart(enabled=True):
     try:
@@ -1581,9 +1590,11 @@ class ControlPanel(BasePanel):
         self.tomato_label.setStyleSheet(f"font-size: {int(28 * self.scale)}px; color: #1a1a2c;")
         self.tomato_label.hide()
 
+        # 保存上一次控制面板的设置，重新打开控制面板时不重置。
+        saved = getattr(parent, '_control_settings', {}) if parent else {}
         self.tomato_spin = QSpinBox()
         self.tomato_spin.setRange(1, 120)
-        self.tomato_spin.setValue(5)
+        self.tomato_spin.setValue(int(saved.get('tomato_minutes', 5)))
         self.tomato_spin.setSuffix(" min" if (parent and parent.lang == 'en') else " 分钟")
         self.tomato_spin.setStyleSheet(f"font-size: {int(16 * self.scale)}px; background: white; color: #1a1a2c;")
         self.tomato_spin_label = QLabel()
@@ -1624,8 +1635,10 @@ class ControlPanel(BasePanel):
 
         self.tomato_timer = QTimer(self)
         self.tomato_timer.timeout.connect(self.update_tomato)
-        self.tomato_remaining = 0
-        self.tomato_running = False
+        self.tomato_remaining = int(getattr(parent, '_tomato_remaining_saved', 0)) if parent else 0
+        self.tomato_running = bool(getattr(parent, '_tomato_running_saved', False)) if parent else False
+        if self.tomato_running and self.tomato_remaining <= 0:
+            self.tomato_running = False
 
         # 提醒设置组
         group2 = QGroupBox(self.container)
@@ -1653,28 +1666,28 @@ class ControlPanel(BasePanel):
         layout2.setContentsMargins(int(10 * self.scale), int(20 * self.scale), int(10 * self.scale), int(10 * self.scale))
 
         self.drink_check = QCheckBox()
-        self.drink_check.setChecked(True)
+        self.drink_check.setChecked(bool(saved.get('drink_enabled', True)))
         self.drink_check.setStyleSheet(f"color: #1a1a2c; font-size: {int(14 * self.scale)}px;")
         layout2.addWidget(self.drink_check, 0, 0)
         self.drink_spin = QSpinBox()
         self.drink_spin.setRange(5, 120)
-        self.drink_spin.setValue(45)
+        self.drink_spin.setValue(int(saved.get('drink_minutes', 45)))
         self.drink_spin.setSuffix(" min" if (parent and parent.lang == 'en') else " 分钟")
         self.drink_spin.setStyleSheet(f"font-size: {int(14 * self.scale)}px; background: white; color: #1a1a2c;")
         layout2.addWidget(self.drink_spin, 0, 1)
 
         self.sleep_check = QCheckBox()
-        self.sleep_check.setChecked(True)
+        self.sleep_check.setChecked(bool(saved.get('sleep_enabled', True)))
         self.sleep_check.setStyleSheet(f"color: #1a1a2c; font-size: {int(14 * self.scale)}px;")
         layout2.addWidget(self.sleep_check, 1, 0)
         sleep_h_layout = QHBoxLayout()
         self.sleep_hour = QSpinBox()
         self.sleep_hour.setRange(0, 23)
-        self.sleep_hour.setValue(22)
+        self.sleep_hour.setValue(int(saved.get('sleep_hour', 22)))
         self.sleep_hour.setStyleSheet(f"font-size: {int(14 * self.scale)}px; background: white; color: #1a1a2c;")
         self.sleep_min = QSpinBox()
         self.sleep_min.setRange(0, 59)
-        self.sleep_min.setValue(0)
+        self.sleep_min.setValue(int(saved.get('sleep_min', 0)))
         self.sleep_min.setStyleSheet(f"font-size: {int(14 * self.scale)}px; background: white; color: #1a1a2c;")
         self.sleep_time_label = QLabel("Time:" if (parent and parent.lang == 'en') else "时间：")
         sleep_h_layout.addWidget(self.sleep_time_label)
@@ -1688,10 +1701,19 @@ class ControlPanel(BasePanel):
         self.eat_label.setStyleSheet(f"font-size: {int(16 * self.scale)}px; color: #1a1a2c; padding: {int(5 * self.scale)}px 0;")
         layout2.addWidget(self.eat_label, 2, 0, 1, 2)
 
-        self.reminder_elapsed = {'喝水': 0}
-        self.reminder_timer = QTimer(self)
-        self.reminder_timer.timeout.connect(self.check_reminders)
-        self.reminder_timer.start(60000)
+        self.reminder_elapsed = dict(getattr(parent, '_reminder_elapsed', {'喝水': 0})) if parent else {'喝水': 0}
+        self.reminder_timer = None
+
+        # 控制面板重新打开/重建时恢复上一轮设置和提示计时进度。
+        if parent is not None:
+            self._save_control_settings = self._persist_settings
+            self.tomato_spin.valueChanged.connect(self._save_control_settings)
+            self.drink_check.stateChanged.connect(self._save_control_settings)
+            self.drink_spin.valueChanged.connect(self._save_control_settings)
+            self.sleep_check.stateChanged.connect(self._save_control_settings)
+            self.sleep_hour.valueChanged.connect(self._save_control_settings)
+            self.sleep_min.valueChanged.connect(self._save_control_settings)
+            self._persist_settings()
 
         self.lunch_triggered = False
         self.dinner_triggered = False
@@ -1700,6 +1722,22 @@ class ControlPanel(BasePanel):
 
         self.update_language(parent.lang if parent else 'zh')
         self.update_tomato_display()
+
+    def _persist_settings(self, *args):
+        if self.parent_pet is None:
+            return
+        self.parent_pet._control_settings = {
+            'tomato_minutes': self.tomato_spin.value(),
+            'drink_enabled': self.drink_check.isChecked(),
+            'drink_minutes': self.drink_spin.value(),
+            'sleep_enabled': self.sleep_check.isChecked(),
+            'sleep_hour': self.sleep_hour.value(),
+            'sleep_min': self.sleep_min.value(),
+            'tomato_remaining': int(getattr(self.parent_pet, '_tomato_remaining_saved', 0)),
+            'tomato_running': bool(getattr(self.parent_pet, '_tomato_running_saved', False)),
+        }
+        self.parent_pet._reminder_elapsed = dict(self.reminder_elapsed)
+        self.parent_pet._save_control_settings()
 
     def update_language(self, lang):
         if lang == 'en':
@@ -1763,6 +1801,10 @@ class ControlPanel(BasePanel):
             minutes = self.tomato_spin.value()
             self.tomato_remaining = minutes * 60
             self.tomato_running = True
+            if self.parent_pet is not None:
+                self.parent_pet._tomato_remaining_saved = self.tomato_remaining
+                self.parent_pet._tomato_running_saved = True
+                self.parent_pet._save_control_settings()
             lang = self.parent_pet.lang if self.parent_pet else 'zh'
             self.tomato_btn.setText("Pause" if lang == 'en' else "暂停")
             self.tomato_btn.setStyleSheet(f"""
@@ -1783,6 +1825,10 @@ class ControlPanel(BasePanel):
         else:
             self.tomato_timer.stop()
             self.tomato_running = False
+            if self.parent_pet is not None:
+                self.parent_pet._tomato_remaining_saved = self.tomato_remaining
+                self.parent_pet._tomato_running_saved = False
+                self.parent_pet._save_control_settings()
             lang = self.parent_pet.lang if self.parent_pet else 'zh'
             self.tomato_btn.setText("▶ Continue" if lang == 'en' else "继续")
             self.tomato_btn.setStyleSheet(f"""
@@ -1818,17 +1864,29 @@ class ControlPanel(BasePanel):
         """)
         minutes = self.tomato_spin.value()
         self.tomato_remaining = minutes * 60
+        if self.parent_pet is not None:
+            self.parent_pet._tomato_remaining_saved = self.tomato_remaining
+            self.parent_pet._tomato_running_saved = False
+            self.parent_pet._save_control_settings()
         self.update_tomato_display()
         self.parent_pet.stop_tomato_display()
 
     def update_tomato(self):
         if self.tomato_remaining > 0:
             self.tomato_remaining -= 1
+            if self.parent_pet is not None:
+                self.parent_pet._tomato_remaining_saved = self.tomato_remaining
+                self.parent_pet._tomato_running_saved = True
+                self.parent_pet._save_control_settings()
             self.update_tomato_display()
             self.parent_pet.update_tomato_display(self.tomato_remaining)
         else:
             self.tomato_timer.stop()
             self.tomato_running = False
+            if self.parent_pet is not None:
+                self.parent_pet._tomato_remaining_saved = 0
+                self.parent_pet._tomato_running_saved = False
+                self.parent_pet._save_control_settings()
             lang = self.parent_pet.lang if self.parent_pet else 'zh'
             self.tomato_btn.setText("▶ Start" if lang == 'en' else "▶ 开始")
             self.tomato_btn.setStyleSheet(f"""
@@ -1856,9 +1914,10 @@ class ControlPanel(BasePanel):
             self.tomato_label.setText(f"休息倒计时：{m:02d}:{s:02d}")
 
     def check_reminders(self):
-        now = QTime.currentTime()
-        hour = now.hour()
-        minute = now.minute()
+        # 提醒由 DesktopPet 独立计时器负责；控制面板打开不会重置计时。
+        if self.parent_pet is not None:
+            self.parent_pet.check_reminders()
+
 
         if self.drink_check.isChecked():
             self.reminder_elapsed['喝水'] += 1
@@ -1866,6 +1925,8 @@ class ControlPanel(BasePanel):
                     not self.parent_pet.is_reminder_pending('drink')):
                 self.parent_pet.add_reminder_dialog('drink', 'drink')
                 self.reminder_elapsed['喝水'] = 0
+            if self.parent_pet is not None:
+                self.parent_pet._reminder_elapsed = dict(self.reminder_elapsed)
 
         if hour == 12 and minute == 0 and not self.lunch_triggered and not self.parent_pet.is_reminder_pending('lunch'):
             self.parent_pet.add_reminder_dialog('lunch', 'lunch')
@@ -2530,7 +2591,14 @@ class DesktopPet(QWidget):
         self._reminder_retry_timers = {}
         self._pending_reminders = set()
 
+        # 控制面板/提醒状态跨面板重开保持，并保存到本地，
+        # 这样桌宠重新启动后也不会把上一轮提醒计时清零。
+        self._control_settings_path = writable_app_path("dnt_control_settings.json")
+        self._load_control_settings()
+
         # 番茄钟相关
+        self._tomato_remaining_saved = int(self._control_settings.get('tomato_remaining', 0))
+        self._tomato_running_saved = bool(self._control_settings.get('tomato_running', False))
         self.tomato_display_active = False
         self.tomato_update_timer = QTimer(self)
 
@@ -2642,6 +2710,7 @@ class DesktopPet(QWidget):
         self.dialogue_bounce_active = False
         self.dialogue_bounce_elapsed = 0.0
         self.dialogue_session_active = False
+        self._tomato_dialog_interrupt = False
         self._talk_open_session_started = False
 
         # 闲置弹跳定时器
@@ -2814,6 +2883,52 @@ class DesktopPet(QWidget):
 
         # 切换服装后重新启动黑屏计时器
         self._start_black_screen_timer()
+
+    def _load_control_settings(self):
+        default_settings = {
+            'tomato_minutes': 5,
+            'drink_enabled': True,
+            'drink_minutes': 45,
+            'sleep_enabled': True,
+            'sleep_hour': 22,
+            'sleep_min': 0,
+            'tomato_remaining': 0,
+            'tomato_running': False,
+            'reminder_last_timestamp': time.time(),
+        }
+        self._control_settings = dict(default_settings)
+        self._reminder_elapsed = {'喝水': 0}
+        now_ts = time.time()
+        try:
+            if os.path.exists(self._control_settings_path):
+                with open(self._control_settings_path, 'r', encoding='utf-8') as f:
+                    saved = json.load(f)
+                if isinstance(saved, dict):
+                    self._control_settings.update({
+                        k: saved[k] for k in default_settings if k in saved
+                    })
+                    elapsed = saved.get('reminder_elapsed', {})
+                    if isinstance(elapsed, dict):
+                        self._reminder_elapsed['喝水'] = max(
+                            0, int(elapsed.get('喝水', 0))
+                        )
+                    # 程序关闭期间也计算已经过去的分钟，避免重新打开后计时从0开始。
+                    last_ts = float(saved.get('reminder_last_timestamp', now_ts))
+                    if last_ts > 0:
+                        offline_minutes = max(0, int((now_ts - last_ts) // 60))
+                        self._reminder_elapsed['喝水'] += offline_minutes
+        except Exception as e:
+            print(f"读取控制面板设置失败: {e}")
+
+    def _save_control_settings(self):
+        try:
+            data = dict(self._control_settings)
+            data['reminder_elapsed'] = dict(self._reminder_elapsed)
+            data['reminder_last_timestamp'] = time.time()
+            with open(self._control_settings_path, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            print(f"保存控制面板设置失败: {e}")
 
     # ==================== 黑屏图层功能 ====================
     def _start_black_screen_timer(self):
@@ -3080,8 +3195,6 @@ class DesktopPet(QWidget):
             return
         if self.pet_form == 'classic':
             self._update_classic_bounce()
-            return
-        if self.tomato_display_active:
             return
         if self.dialogue_bounce_active:
             return
@@ -3737,7 +3850,7 @@ class DesktopPet(QWidget):
     def _next_frame(self):
         if self.animation_paused or not self.animation_timer_started:
             return
-        if self.is_displaying or self.is_dragging or self.tomato_display_active:
+        if self.is_displaying or self.is_dragging:
             return
         if getattr(self, "_mouth_animation_active", False) or self._black_screen_active:
             return
@@ -3820,7 +3933,7 @@ class DesktopPet(QWidget):
         self.startup_timer.start(1000)
 
     def _update_classic_bounce(self):
-        if not self.legacy_pet_frames or self.tomato_display_active or self.is_dragging:
+        if not self.legacy_pet_frames or self.is_dragging:
             return
         self.legacy_bounce_time += 0.15
         bounce_y = math.sin(self.legacy_bounce_time * 2.5) * 3 * self.scale
@@ -3845,8 +3958,13 @@ class DesktopPet(QWidget):
         self.tomato_update_timer.start(1000)
 
     def update_tomato_display(self, seconds):
-        if self.tomato_display_active:
-            self.bubble.show_big_text(self._format_time(seconds))
+        if not self.tomato_display_active:
+            return
+        # 对话期间不要每秒覆盖气泡；倒计时仍在后台继续。
+        # 对话结束后再恢复当前剩余时间。
+        if self.is_displaying:
+            return
+        self.bubble.show_big_text(self._format_time(seconds))
 
     def stop_tomato_display(self):
         self.tomato_display_active = False
@@ -4036,7 +4154,7 @@ class DesktopPet(QWidget):
             self.dialog_timer.stop()
             self.dialog_timer = None
 
-    def add_dialog(self, text, requires_confirmation=False, priority=False, reminder_key=None):
+    def add_dialog(self, text, requires_confirmation=False, priority=False, reminder_key=None, interrupt_tomato=False):
         dialog_item = (text, requires_confirmation, reminder_key)
         if priority:
             self.dialog_queue.insert(0, dialog_item)
@@ -4047,18 +4165,23 @@ class DesktopPet(QWidget):
         self._reset_black_screen_timer()
 
         if self.tomato_display_active:
-            return
+            if not interrupt_tomato:
+                return
+            # 用户主动点击/调情时，临时让对话盖住番茄钟；倒计时本身不暂停。
+            self._tomato_dialog_interrupt = True
+            self.bubble.hide()
+            self.is_displaying = False
 
         if not self.is_displaying:
-            self.show_next_dialog()
+            self.show_next_dialog(allow_during_tomato=interrupt_tomato)
 
-    def show_next_dialog(self):
+    def show_next_dialog(self, allow_during_tomato=False):
         # 整组对话第一次开始时播放张嘴和弹跳
         if not self.dialogue_session_active:
             self.dialogue_session_active = True
             self._start_talking_mouth()
 
-        if self.tomato_display_active:
+        if self.tomato_display_active and not (allow_during_tomato or getattr(self, '_tomato_dialog_interrupt', False)):
             return
         self.clear_dialog_timer()
         if self.dialog_queue:
@@ -4077,8 +4200,7 @@ class DesktopPet(QWidget):
             self.dialogue_bounce_active = False
 
     def start_dialog_continuation(self, remaining, requires_confirmation=False):
-        if self.tomato_display_active:
-            return
+        # 番茄钟期间长对话也必须允许继续播放，不能被番茄钟强制截断。
         self.clear_dialog_timer()
         self.is_displaying = True
         self.current_dialog_requires_confirmation = requires_confirmation
@@ -4089,7 +4211,11 @@ class DesktopPet(QWidget):
         if self.dialog_queue:
             self.dialog_timer = QTimer(self)
             self.dialog_timer.setSingleShot(True)
-            self.dialog_timer.timeout.connect(self.show_next_dialog)
+            self.dialog_timer.timeout.connect(
+                lambda: self.show_next_dialog(
+                    allow_during_tomato=getattr(self, '_tomato_dialog_interrupt', False)
+                )
+            )
             self.dialog_timer.start(3000)
         else:
             self._stop_talking_mouth()
@@ -4101,8 +4227,28 @@ class DesktopPet(QWidget):
                 return
             self.dialog_timer = QTimer(self)
             self.dialog_timer.setSingleShot(True)
-            self.dialog_timer.timeout.connect(self._fade_and_reset)
+            self.dialog_timer.timeout.connect(self._finish_dialog_or_resume_tomato)
             self.dialog_timer.start(3000)
+
+    def _finish_dialog_or_resume_tomato(self):
+        if getattr(self, '_tomato_dialog_interrupt', False) and self.tomato_display_active:
+            self._tomato_dialog_interrupt = False
+            self.bubble.hide()
+            self.is_displaying = False
+            self.current_dialog_requires_confirmation = False
+            self._stop_talking_mouth()
+            # 继续显示当前剩余时间；番茄钟倒计时从未被暂停。
+            # 不重新调用 start_tomato_display，避免再次重置/打断状态。
+            if self.control_panel is not None:
+                self.bubble.show_big_text(
+                    self._format_time(self.control_panel.tomato_remaining)
+                )
+            elif self._tomato_remaining_saved > 0:
+                self.bubble.show_big_text(
+                    self._format_time(self._tomato_remaining_saved)
+                )
+            return
+        self._fade_and_reset()
 
     def confirm_dialog(self):
         # 用户点击 Confirm：取消当前提醒的再次提醒计时。
@@ -4120,8 +4266,22 @@ class DesktopPet(QWidget):
         self.current_dialog_requires_confirmation = False
         self.current_reminder_key = None
         self.dialogue_bounce_active = False
-        if self.dialog_queue and not self.tomato_display_active:
-            self.show_next_dialog()
+        if self.dialog_queue:
+            self.show_next_dialog(
+                allow_during_tomato=getattr(self, '_tomato_dialog_interrupt', False)
+            )
+        elif getattr(self, '_tomato_dialog_interrupt', False) and self.tomato_display_active:
+            self._tomato_dialog_interrupt = False
+            self.dialogue_session_active = False
+            self._stop_talking_mouth()
+            if self.control_panel is not None:
+                self.bubble.show_big_text(
+                    self._format_time(self.control_panel.tomato_remaining)
+                )
+            elif self._tomato_remaining_saved > 0:
+                self.bubble.show_big_text(
+                    self._format_time(self._tomato_remaining_saved)
+                )
         else:
             self.dialogue_session_active = False
             self._stop_talking_mouth()
@@ -4149,6 +4309,17 @@ class DesktopPet(QWidget):
         self.dialogue_bounce_active = False
         self.dialogue_session_active = False
         self._stop_talking_mouth()
+
+        if getattr(self, '_tomato_dialog_interrupt', False) and self.tomato_display_active:
+            self._tomato_dialog_interrupt = False
+            if self.control_panel is not None:
+                self.bubble.show_big_text(
+                    self._format_time(self.control_panel.tomato_remaining)
+                )
+            elif self._tomato_remaining_saved > 0:
+                self.bubble.show_big_text(
+                    self._format_time(self._tomato_remaining_saved)
+                )
 
         if not reminder_key or reminder_key not in self._pending_reminders:
             return
@@ -4190,13 +4361,13 @@ class DesktopPet(QWidget):
 
     def _on_pet_click(self):
         if self.auto_dialog_enabled:
-            self.add_dialog(random.choice(get_dialogues(self.lang, 'click')))
+            self.add_dialog(random.choice(get_dialogues(self.lang, 'click')), priority=True, interrupt_tomato=True)
 
     def flirt(self):
-        self.add_dialog(random.choice(get_dialogues(self.lang, 'flirt')))
+        self.add_dialog(random.choice(get_dialogues(self.lang, 'flirt')), priority=True, interrupt_tomato=True)
 
     def _random_dialog(self):
-        if (self.auto_dialog_enabled and not self.tomato_display_active and
+        if (self.auto_dialog_enabled and
             not self.is_displaying and not self.current_dialog_requires_confirmation):
             self.add_dialog(random.choice(get_dialogues(self.lang, 'random')))
 
@@ -4235,6 +4406,47 @@ class DesktopPet(QWidget):
         else:
             message = f'你写过：" {note_sentence} "{role_line}'
         self.add_dialog(message)
+
+    def check_reminders(self):
+        """独立提醒计时器：不依赖控制面板是否打开。"""
+        now = QTime.currentTime()
+        hour, minute = now.hour(), now.minute()
+        settings = getattr(self, '_control_settings', {})
+
+        # 喝水：使用持久化的累计分钟。首次运行默认开启。
+        drink_enabled = bool(settings.get('drink_enabled', True))
+        drink_minutes = max(1, int(settings.get('drink_minutes', 45)))
+        if drink_enabled:
+            self._reminder_elapsed['喝水'] = int(self._reminder_elapsed.get('喝水', 0)) + 1
+            if (self._reminder_elapsed['喝水'] >= drink_minutes
+                    and not self.is_reminder_pending('drink')):
+                self.add_reminder_dialog('drink', 'drink')
+                self._reminder_elapsed['喝水'] = 0
+
+        # 午饭 / 晚饭 / 睡觉提醒不依赖控制面板是否存在。
+        if hour == 12 and minute == 0 and not self._lunch_triggered and not self.is_reminder_pending('lunch'):
+            self.add_reminder_dialog('lunch', 'lunch')
+            self._lunch_triggered = True
+        if hour != 12:
+            self._lunch_triggered = False
+
+        if hour == 18 and minute == 0 and not self._dinner_triggered and not self.is_reminder_pending('dinner'):
+            self.add_reminder_dialog('dinner', 'dinner')
+            self._dinner_triggered = True
+        if hour != 18:
+            self._dinner_triggered = False
+
+        if bool(settings.get('sleep_enabled', True)):
+            set_h = int(settings.get('sleep_hour', 22))
+            set_m = int(settings.get('sleep_min', 0))
+            if hour == set_h and minute == set_m and not self._sleep_triggered and not self.is_reminder_pending('sleep'):
+                self.add_reminder_dialog('sleep', 'sleep')
+                self._sleep_triggered = True
+            if hour != set_h or minute != set_m:
+                self._sleep_triggered = False
+
+        self._control_settings['reminder_elapsed'] = dict(self._reminder_elapsed)
+        self._save_control_settings()
 
     def show_control_panel(self):
         if self.control_panel is None:
