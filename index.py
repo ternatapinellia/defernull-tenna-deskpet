@@ -1726,7 +1726,9 @@ class ControlPanel(BasePanel):
     def _persist_settings(self, *args):
         if self.parent_pet is None:
             return
-        self.parent_pet._control_settings = {
+        # 控制面板只负责修改设置，不负责提醒计时。
+        # reminder_elapsed 由 DesktopPet 主提醒系统独立维护，避免打开/修改控制面板时把计时覆盖回旧值。
+        self.parent_pet._control_settings.update({
             'tomato_minutes': self.tomato_spin.value(),
             'drink_enabled': self.drink_check.isChecked(),
             'drink_minutes': self.drink_spin.value(),
@@ -1735,8 +1737,7 @@ class ControlPanel(BasePanel):
             'sleep_min': self.sleep_min.value(),
             'tomato_remaining': int(getattr(self.parent_pet, '_tomato_remaining_saved', 0)),
             'tomato_running': bool(getattr(self.parent_pet, '_tomato_running_saved', False)),
-        }
-        self.parent_pet._reminder_elapsed = dict(self.reminder_elapsed)
+        })
         self.parent_pet._save_control_settings()
 
     def update_language(self, lang):
@@ -1914,40 +1915,10 @@ class ControlPanel(BasePanel):
             self.tomato_label.setText(f"休息倒计时：{m:02d}:{s:02d}")
 
     def check_reminders(self):
-        # 提醒由 DesktopPet 独立计时器负责；控制面板打开不会重置计时。
+        # 提醒完全由 DesktopPet 主程序负责。
+        # 保留此方法仅用于兼容旧调用；控制面板本身不再累计或触发提醒。
         if self.parent_pet is not None:
-            self.parent_pet.check_reminders()
-
-
-        if self.drink_check.isChecked():
-            self.reminder_elapsed['喝水'] += 1
-            if (self.reminder_elapsed['喝水'] >= self.drink_spin.value() and
-                    not self.parent_pet.is_reminder_pending('drink')):
-                self.parent_pet.add_reminder_dialog('drink', 'drink')
-                self.reminder_elapsed['喝水'] = 0
-            if self.parent_pet is not None:
-                self.parent_pet._reminder_elapsed = dict(self.reminder_elapsed)
-
-        if hour == 12 and minute == 0 and not self.lunch_triggered and not self.parent_pet.is_reminder_pending('lunch'):
-            self.parent_pet.add_reminder_dialog('lunch', 'lunch')
-            self.lunch_triggered = True
-        if hour != 12:
-            self.lunch_triggered = False
-
-        if hour == 18 and minute == 0 and not self.parent_pet.is_reminder_pending('dinner') and not self.dinner_triggered:
-            self.parent_pet.add_reminder_dialog('dinner', 'dinner')
-            self.dinner_triggered = True
-        if hour != 18:
-            self.dinner_triggered = False
-
-        if self.sleep_check.isChecked():
-            set_h = self.sleep_hour.value()
-            set_m = self.sleep_min.value()
-            if hour == set_h and minute == set_m and not self.sleep_triggered and not self.parent_pet.is_reminder_pending('sleep'):
-                self.parent_pet.add_reminder_dialog('sleep', 'sleep')
-                self.sleep_triggered = True
-            if hour != set_h or minute != set_m:
-                self.sleep_triggered = False
+            self.parent_pet.check_reminders(initial=True)
 
 
 # ---------- 带淡入淡出的QLabel ----------
@@ -2595,6 +2566,9 @@ class DesktopPet(QWidget):
         # 这样桌宠重新启动后也不会把上一轮提醒计时清零。
         self._control_settings_path = writable_app_path("dnt_control_settings.json")
         self._load_control_settings()
+        # 首次启动没有配置文件时，也立即写入默认提醒设置。
+        # 已有配置时则保存读取后的原设置，不会重置用户选择。
+        self._save_control_settings()
 
         # 番茄钟相关
         self._tomato_remaining_saved = int(self._control_settings.get('tomato_remaining', 0))
@@ -2753,6 +2727,23 @@ class DesktopPet(QWidget):
         self.note_repeat_timer.timeout.connect(self._repeat_random_note)
         self.note_repeat_timer.start(60 * 1000)
         self.note_repeat_elapsed = 0
+
+        # ==================== 主提醒系统 ====================
+        # 提醒从桌宠启动时就开始运行，不依赖控制面板是否打开。
+        self._lunch_triggered = False
+        self._dinner_triggered = False
+        self._sleep_triggered = False
+
+        self.reminder_timer = QTimer(self)
+        self.reminder_timer.setInterval(60 * 1000)
+        self.reminder_timer.timeout.connect(self.check_reminders)
+        self.reminder_timer.start()
+
+        # 启动后立即检查一次：
+        # - 若关闭桌宠期间喝水提醒已经到期，会立即提醒；
+        # - 若刚好在午饭/晚饭/睡觉提醒分钟，也不会因为等待第一个60秒而错过；
+        # - 首次启动不会无故增加1分钟喝水计时。
+        QTimer.singleShot(1000, lambda: self.check_reminders(initial=True))
 
         # 创建菜单
         self.create_menu()
@@ -4407,8 +4398,8 @@ class DesktopPet(QWidget):
             message = f'你写过：" {note_sentence} "{role_line}'
         self.add_dialog(message)
 
-    def check_reminders(self):
-        """独立提醒计时器：不依赖控制面板是否打开。"""
+    def check_reminders(self, initial=False):
+        """独立提醒计时器：桌宠启动即运行，不依赖控制面板是否打开。"""
         now = QTime.currentTime()
         hour, minute = now.hour(), now.minute()
         settings = getattr(self, '_control_settings', {})
@@ -4417,7 +4408,12 @@ class DesktopPet(QWidget):
         drink_enabled = bool(settings.get('drink_enabled', True))
         drink_minutes = max(1, int(settings.get('drink_minutes', 45)))
         if drink_enabled:
-            self._reminder_elapsed['喝水'] = int(self._reminder_elapsed.get('喝水', 0)) + 1
+            # 正常每分钟 +1；启动时的即时检查不额外增加一分钟。
+            if not initial:
+                self._reminder_elapsed['喝水'] = int(self._reminder_elapsed.get('喝水', 0)) + 1
+            else:
+                self._reminder_elapsed['喝水'] = int(self._reminder_elapsed.get('喝水', 0))
+
             if (self._reminder_elapsed['喝水'] >= drink_minutes
                     and not self.is_reminder_pending('drink')):
                 self.add_reminder_dialog('drink', 'drink')
