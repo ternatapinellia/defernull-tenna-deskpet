@@ -7,8 +7,7 @@ Instructions
 Left-click on the pet to trigger a dialogue. Right-click to display the menu and exit. To exit the Control Panel and News interface and notes panel, right-click on the pet as well. You can switch between Chinese and English. If you find it uncomfortable, you can pause, hide the pet, and pause auto-dialogue. This will pause timed interval dialogues and click-triggered dialogues. There are fixed-time reminders for drinking water, eating, and sleeping.The desktop pet comes with a built-in auto-start feature. If you do not need it, you can disable or enable it manually in the system settings.Right-click the menu and select **Notes** to record your daily inspirations or important events.Right-click to switch between different pet forms. **Form 2** has 7 different outfits.Hold Ctrl and scroll the mouse wheel over the desktop pet to adjust its size.
 
 Release Links/下载链接
-https://github.com/ternatapinellia/defernull-tenna-deskpet/releases/tag/v4.6
-
+https://github.com/ternatapinellia/defernull-tenna-deskpet/releases/tag/v4.7
 下载release界面zip后解压，直接双击desktoppet.exe便可使用。备注：下载后打不开或者打开后立刻关闭请检查电脑安全中心和防火墙是否有放行该软件，大概率被防火墙杀了。
 
 After downloading the ZIP file from the Release page, extract it and simply double-click **DesktopPet.exe** to use the application.
@@ -31,13 +30,9 @@ https://github.com/user-attachments/assets/1976eea6-9234-41fb-9144-256ac8ccacea
 
 ——
 
-v4.6更新
+v4.7更新
 
-1.修复了一点台词的小问题
-
-2.修复了专注的时候番茄钟倒计时的时候不会播放对话的问题
-
-3.修复了刚打开桌宠的时候不会开启提醒的问题，修复了退出再打开的时候桌宠不会保存提醒时间的问题
+1.修复了未设置提醒时间的时候桌宠不会开启提醒的问题
 
 理论上不会再进行更新。
 
@@ -54,6 +49,15 @@ v4.6更新
 7.午夜新闻可能无法筛选到既定的犯罪新闻因而转而使用内置，大概是运气问题
 
 8.午夜新闻，英文版的今日新闻和午夜新闻，共用一个api，该api有每日调用的次数上限，达到上限后会直接使用内置。
+——
+
+v4.6更新
+
+1.修复了一点台词的小问题
+
+2.修复了专注的时候番茄钟倒计时的时候不会播放对话的问题
+
+3.修复了刚打开桌宠的时候不会开启提醒的问题，修复了退出再打开的时候桌宠不会保存提醒时间的问题
 
 ——
 
