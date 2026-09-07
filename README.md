@@ -8,6 +8,7 @@ Left-click on the pet to trigger a dialogue. Right-click to display the menu and
 
 Release Links/下载链接
 https://github.com/ternatapinellia/defernull-tenna-deskpet/releases/tag/v4.7
+
 下载release界面zip后解压，直接双击desktoppet.exe便可使用。备注：下载后打不开或者打开后立刻关闭请检查电脑安全中心和防火墙是否有放行该软件，大概率被防火墙杀了。
 
 After downloading the ZIP file from the Release page, extract it and simply double-click **DesktopPet.exe** to use the application.
@@ -49,6 +50,7 @@ v4.7更新
 7.午夜新闻可能无法筛选到既定的犯罪新闻因而转而使用内置，大概是运气问题
 
 8.午夜新闻，英文版的今日新闻和午夜新闻，共用一个api，该api有每日调用的次数上限，达到上限后会直接使用内置。
+
 ——
 
 v4.6更新
