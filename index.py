@@ -1,6 +1,10 @@
 # -*- coding: utf-8 -*-
-import sys
 import os
+# Qt 在 Windows 上遇到某些 Bricolage Grotesque 可变字体/字体变体时，
+# 可能输出 qt.qpa.fonts 的 enumerate warning。桌宠实际使用 Microsoft YaHei，
+# 不依赖这些字体；关闭这类无害的 Qt 字体枚举警告，避免启动时刷屏。
+os.environ.setdefault("QT_LOGGING_RULES", "qt.qpa.fonts.warning=false")
+import sys
 import random
 import math
 import json
@@ -12,11 +16,12 @@ import base64
 import re
 from PyQt5.QtWidgets import (QApplication, QWidget, QLabel, QMenu,
                              QPushButton, QGridLayout, QGroupBox,
-                             QSpinBox, QCheckBox, QHBoxLayout, QAction,
+                             QSpinBox, QCheckBox, QHBoxLayout, QAction, QWidgetAction, QSlider,
                              QFrame, QVBoxLayout, QSystemTrayIcon,
                              QScrollArea, QPlainTextEdit)
-from PyQt5.QtCore import Qt, QTimer, QPropertyAnimation, QPoint, QTime, QEasingCurve, QDateTime, QEvent
+from PyQt5.QtCore import Qt, QTimer, QPropertyAnimation, QPoint, QTime, QEasingCurve, QDateTime, QEvent, QUrl
 from PyQt5.QtGui import QPixmap, QPainter, QFont, QColor, QPalette, QIcon, QImage
+from PyQt5.QtMultimedia import QSoundEffect
 
 # 导入对话配置
 try:
@@ -84,6 +89,15 @@ def resource_path(relative_path):
     return os.path.join(base_path, relative_path)
 
 
+def audio_resource_path(relative_path):
+    """读取外置 Tenna WAV：源码和打包 EXE 都从程序目录读取。"""
+    if getattr(sys, "frozen", False):
+        base_path = os.path.dirname(os.path.abspath(sys.executable))
+    else:
+        base_path = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(base_path, relative_path)
+
+
 def writable_app_path(relative_path):
     """返回可写入的程序数据路径。PyInstaller 打包后不能把状态写进 _MEIPASS。"""
     if getattr(sys, "frozen", False):
@@ -91,6 +105,27 @@ def writable_app_path(relative_path):
     else:
         base_path = os.path.dirname(os.path.abspath(__file__))
     return os.path.join(base_path, relative_path)
+
+
+def load_tenna_volume():
+    """读取上次保存的 Tenna 音量；默认 80%。"""
+    try:
+        path = writable_app_path("tenna_volume.json")
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return max(0, min(100, int(data.get("volume", 80))))
+    except Exception:
+        return 80
+
+
+def save_tenna_volume(value):
+    """保存 Tenna 音量到程序目录。"""
+    try:
+        path = writable_app_path("tenna_volume.json")
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump({"volume": int(value)}, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"Tenna 音量保存失败: {e}")
 
 # ---------- Windows 开机自启 ----------
 def set_windows_autostart(enabled=True):
@@ -422,7 +457,7 @@ class BubbleWidget(QWidget):
         self.char_index = 0
         self.typing_timer = QTimer(self)
         self.typing_timer.timeout.connect(self.type_char)
-        self.typing_interval = 50
+        self.typing_interval = 75
 
         self.is_typing = False
         self.is_complete = False
@@ -566,6 +601,14 @@ class BubbleWidget(QWidget):
                         parent.on_dialog_complete()
             else:
                 self.label.setText(current_text)
+                # 跟随文字逐字播放；空格、换行和常见标点静音，避免声音过密。
+                current_char = self.full_text[self.char_index - 1]
+                if not current_char.isspace() and not re.match(r"[\s\.,!?;:，。！？；：、~～…\-—_\"'\(\)\[\]{}<>]", current_char):
+                    parent = self.parent()
+                    if parent is not None and hasattr(parent, "_play_tenna_char_sound"):
+                        parent._play_tenna_char_sound(
+                            getattr(parent, "current_reminder_key", None)
+                        )
         else:
             self.typing_timer.stop()
             self.is_typing = False
@@ -2519,6 +2562,40 @@ class DesktopPet(QWidget):
         self.scale = min(screen_w / 1920, screen_h / 1080)
         self.lang = 'zh'
 
+        # ---------- Tenna 逐字对话音效 ----------
+        # 每个可发声字符触发一个很短的 Tenna 音节：
+        # 普通对话 -3 半音；提醒 -4 半音。
+        # 音效本身只有约 55ms，因此会跟随 BubbleWidget 的逐字显示节奏，
+        # 不再播放整句长音频。
+        self.tenna_voice_sounds = []
+        self.tenna_reminder_voice_sounds = []
+        self.tenna_voice_index = 0
+        # Tenna 音量：0-100，默认 80%。菜单中的滑条会同时控制普通/提醒音效。
+        self.tenna_volume = load_tenna_volume()
+        for i in range(1, 11):
+            normal_path = audio_resource_path(os.path.join(
+                "tenna_voice_normal", f"tenna_voice_{i:02d}.wav"
+            ))
+            reminder_path = audio_resource_path(os.path.join(
+                "tenna_voice_reminder", f"tenna_voice_{i:02d}.wav"
+            ))
+
+            normal_sound = QSoundEffect(self)
+            normal_sound.setVolume(self.tenna_volume / 100.0)
+            if os.path.isfile(normal_path):
+                normal_sound.setSource(QUrl.fromLocalFile(normal_path))
+            else:
+                print(f"Tenna 普通逐字音效不存在: {normal_path}")
+            self.tenna_voice_sounds.append(normal_sound)
+
+            reminder_sound = QSoundEffect(self)
+            reminder_sound.setVolume(self.tenna_volume / 100.0)
+            if os.path.isfile(reminder_path):
+                reminder_sound.setSource(QUrl.fromLocalFile(reminder_path))
+            else:
+                print(f"Tenna 提醒逐字音效不存在: {reminder_path}")
+            self.tenna_reminder_voice_sounds.append(reminder_sound)
+
         # 桌宠形态：dnt = 07版完整DNT动画；classic = 原index的pet1~pet9动画。
         self.pet_form = 'dnt'
         self._happy_transition_active = False
@@ -2664,6 +2741,8 @@ class DesktopPet(QWidget):
         self.label = FadeLabel(self)
         self.label.setAlignment(Qt.AlignCenter)
         self.label.setWindowOpacity(1.0)
+        # QLabel 本身会接收鼠标事件；通过 eventFilter 转发给 DesktopPet，
+        # 这样点击桌宠时既能保留拖动/右键菜单，又不会出现“只有动画、没有对话”的问题。
         self.label.installEventFilter(self)
         self._show_pet_frame_fixed(self.pet_static)
 
@@ -3608,6 +3687,8 @@ class DesktopPet(QWidget):
                 "Bubble: Fixed Bottom-Right" if self.bubble_mode == "follow"
                 else "Bubble: Follow Pet"
             )
+            if hasattr(self, "volume_menu"):
+                self.volume_menu.setTitle("Volume")
             self.pet_form_action.setText("Switch to Classic Pet" if self.pet_form == 'dnt' else "Switch to DNT Pet")
             self.toggle_animation_action.setText("Pause Animation" if not self.animation_paused else "Start Animation")
             self.toggle_visibility_action.setText("Hide Pet" if self.isVisible() else "Show Pet")
@@ -3641,6 +3722,8 @@ class DesktopPet(QWidget):
                 "气泡固定右下角" if self.bubble_mode == "follow"
                 else "气泡跟随桌宠"
             )
+            if hasattr(self, "volume_menu"):
+                self.volume_menu.setTitle("音量")
             self.pet_form_action.setText("切换到桌宠1" if self.pet_form == 'dnt' else "切换到桌宠2")
             self.toggle_animation_action.setText("暂停动画" if not self.animation_paused else "开始动画")
             self.toggle_visibility_action.setText("显示/隐藏" if self.isVisible() else "显示/隐藏")
@@ -4066,15 +4149,27 @@ class DesktopPet(QWidget):
                 self._set_mouth_frame_centered(combined)
 
     def eventFilter(self, obj, event):
-        if obj is getattr(self, "label", None) and event.type() == QEvent.Wheel:
-            if event.modifiers() & Qt.ControlModifier:
-                delta = event.angleDelta().y()
-                if delta:
-                    steps = 1 if delta > 0 else -1
-                    self._set_pet_zoom(
-                        getattr(self, "pet_zoom", 1.0)
-                        + steps * getattr(self, "pet_zoom_step", 0.1)
-                    )
+        # 桌宠图片 QLabel 会吃掉鼠标事件，所以统一转发到主窗口。
+        # 这样点击、拖动、右键菜单和 Ctrl+滚轮缩放都保持原有行为。
+        if obj is getattr(self, "label", None):
+            if event.type() == QEvent.Wheel:
+                if event.modifiers() & Qt.ControlModifier:
+                    delta = event.angleDelta().y()
+                    if delta:
+                        steps = 1 if delta > 0 else -1
+                        self._set_pet_zoom(
+                            getattr(self, "pet_zoom", 1.0)
+                            + steps * getattr(self, "pet_zoom_step", 0.1)
+                        )
+                    return True
+            elif event.type() == QEvent.MouseButtonPress:
+                self.mousePressEvent(event)
+                return True
+            elif event.type() == QEvent.MouseMove:
+                self.mouseMoveEvent(event)
+                return True
+            elif event.type() == QEvent.MouseButtonRelease:
+                self.mouseReleaseEvent(event)
                 return True
         return super().eventFilter(obj, event)
 
@@ -4133,7 +4228,9 @@ class DesktopPet(QWidget):
             if not self.animation_paused and self.animation_timer_started:
                 self.animation_timer.start(300 if self.pet_form == 'classic' else getattr(self, 'save_animation_interval', 300))
             if not self.is_dragging:
-                pos = event.pos()
+                # event 可能来自桌宠 QLabel 的 eventFilter，此时 event.pos() 是
+                # QLabel 坐标；统一转换成 DesktopPet 主窗口坐标再判断点击区域。
+                pos = self.mapFromGlobal(event.globalPos())
                 pet_rect = self.label.geometry()
                 if pet_rect.contains(pos):
                     self._on_pet_click()
@@ -4144,6 +4241,27 @@ class DesktopPet(QWidget):
         if self.dialog_timer is not None:
             self.dialog_timer.stop()
             self.dialog_timer = None
+
+    def _play_tenna_char_sound(self, reminder_key=None):
+        """播放一个逐字 Tenna 短音。标点和空白不在这里触发。"""
+        try:
+            reminder_keys = {"drink", "lunch", "dinner", "sleep"}
+            sounds = (
+                self.tenna_reminder_voice_sounds
+                if reminder_key in reminder_keys
+                else self.tenna_voice_sounds
+            )
+            if not sounds:
+                return
+
+            # 10 个音节轮换，避免连续字符全部使用同一个音。
+            sound = sounds[self.tenna_voice_index % len(sounds)]
+            self.tenna_voice_index += 1
+            if sound is not None and not sound.source().isEmpty():
+                sound.stop()
+                sound.play()
+        except Exception as e:
+            print(f"Tenna 逐字音效播放失败: {e}")
 
     def add_dialog(self, text, requires_confirmation=False, priority=False, reminder_key=None, interrupt_tomato=False):
         dialog_item = (text, requires_confirmation, reminder_key)
@@ -4181,6 +4299,9 @@ class DesktopPet(QWidget):
             self.current_dialog_requires_confirmation = requires_confirmation
             self.current_reminder_key = reminder_key
             self.update_bubble_position()
+            # 逐字音效在 BubbleWidget.type_char() 中触发，这里只记录当前提醒类型。
+            # 这样提醒首次出现和再次提醒都会自动使用 -4 半音。
+            self.tenna_voice_index = 0
             self.bubble.start_typing(text, requires_confirmation)
         else:
             self.is_displaying = False
@@ -4278,7 +4399,7 @@ class DesktopPet(QWidget):
             self._stop_talking_mouth()
 
     def add_reminder_dialog(self, reminder_key, dialogue_key):
-        """添加喝水/吃饭/睡觉提醒，并记录为待确认提醒。"""
+        """添加提醒；提醒显示时使用 Tenna -4 半音语音。"""
         self._pending_reminders.add(reminder_key)
         self.add_dialog(
             random.choice(get_dialogues(self.lang, dialogue_key)),
@@ -4499,6 +4620,50 @@ class DesktopPet(QWidget):
 
         self._update_menu_language()
 
+    def _set_tenna_volume(self, value):
+        """统一调整 Tenna 普通对话和提醒音量。value 为 0-100。"""
+        try:
+            self.tenna_volume = max(0, min(100, int(value)))
+        except (TypeError, ValueError):
+            return
+
+        save_tenna_volume(self.tenna_volume)
+
+        volume = self.tenna_volume / 100.0
+        for sound in getattr(self, "tenna_voice_sounds", []):
+            sound.setVolume(volume)
+        for sound in getattr(self, "tenna_reminder_voice_sounds", []):
+            sound.setVolume(volume)
+
+        if hasattr(self, "volume_value_label"):
+            self.volume_value_label.setText(f"{self.tenna_volume}%")
+
+    def _create_volume_menu(self):
+        """创建菜单中的 Tenna 音量滑条。"""
+        self.volume_menu = QMenu(self)
+        self.volume_slider = QSlider(Qt.Horizontal, self.volume_menu)
+        self.volume_slider.setRange(0, 100)
+        self.volume_slider.setValue(getattr(self, "tenna_volume", 80))
+        self.volume_slider.setFixedWidth(180)
+        self.volume_slider.valueChanged.connect(self._set_tenna_volume)
+
+        # 用 QWidgetAction 把真正的拉条放进 QMenu。
+        slider_action = QWidgetAction(self.volume_menu)
+        slider_container = QWidget(self.volume_menu)
+        slider_layout = QHBoxLayout(slider_container)
+        slider_layout.setContentsMargins(10, 4, 10, 4)
+        slider_layout.setSpacing(8)
+        slider_layout.addWidget(self.volume_slider)
+
+        self.volume_value_label = QLabel(f"{self.tenna_volume}%", slider_container)
+        self.volume_value_label.setMinimumWidth(38)
+        self.volume_value_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        slider_layout.addWidget(self.volume_value_label)
+
+        slider_action.setDefaultWidget(slider_container)
+        self.volume_menu.addAction(slider_action)
+        return self.volume_menu
+
     def create_menu(self):
         self.menu = QMenu(self)
         self.control_action = QAction(self)
@@ -4513,6 +4678,8 @@ class DesktopPet(QWidget):
         self.midnight_action.triggered.connect(self.show_midnight_news)
         self.bubble_mode_action = QAction(self)
         self.bubble_mode_action.triggered.connect(self._toggle_bubble_mode)
+
+        self._create_volume_menu()
 
         self.costume_menu = QMenu(self)
         self.costume_actions = []
@@ -4541,6 +4708,7 @@ class DesktopPet(QWidget):
         self.menu.addAction(self.note_action)
         self.menu.addMenu(self.costume_menu)
         self.menu.addAction(self.flirt_action)
+        self.menu.addMenu(self.volume_menu)
         self.menu.addAction(self.news_action)
         self.menu.addAction(self.midnight_action)
         self.menu.addAction(self.bubble_mode_action)
