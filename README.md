@@ -1,13 +1,25 @@
 使用说明
 
-左键点击桌宠对话，右键点击显示菜单和退出，进入控制面板和新闻界面和便签界面同样右键点击桌宠退出。可切换中英文，如有不适可暂停、隐藏桌宠和暂停自动对话，会暂停时间间隔性对话和点击桌宠时对话，固定时间会有喝水吃饭和睡觉提示，桌宠自带开机自启功能，如不需要可以自行去系统中关闭，或者是打开。右键菜单点击便签可以记录日常灵感或重要事件。右键可点击切换桌宠形态，形态2有7套服装。按下ctrl鼠标滚轮在桌宠上滑动可以调整桌宠大小。
+左键点击桌宠对话，右键点击显示菜单和退出，进入控制面板和新闻界面和便签界面同样右键点击桌宠退出。可切换中英文，如有不适可暂停、隐藏桌宠和暂停自动对话，会暂停时间间隔性对话和点击桌宠时对话。可自行调节桌宠音量甚至关闭声音，固定时间会有喝水吃饭和睡觉提示，桌宠自带开机自启功能，如不需要可以自行去系统中关闭，或者是打开。右键菜单点击便签可以记录日常灵感或重要事件。右键可点击切换桌宠形态，形态2有7套服装。按下ctrl鼠标滚轮在桌宠上滑动可以调整桌宠大小。
 
 Instructions
 
-Left-click on the pet to trigger a dialogue. Right-click to display the menu and exit. To exit the Control Panel and News interface and notes panel, right-click on the pet as well. You can switch between Chinese and English. If you find it uncomfortable, you can pause, hide the pet, and pause auto-dialogue. This will pause timed interval dialogues and click-triggered dialogues. There are fixed-time reminders for drinking water, eating, and sleeping.The desktop pet comes with a built-in auto-start feature. If you do not need it, you can disable or enable it manually in the system settings.Right-click the menu and select **Notes** to record your daily inspirations or important events.Right-click to switch between different pet forms. **Form 2** has 7 different outfits.Hold Ctrl and scroll the mouse wheel over the desktop pet to adjust its size.
+Left-click the desktop pet to interact with it and display dialogue. Right-click the desktop pet to open the menu or exit the application. The same right-click function can be used to exit the Control Panel, News, and Notes interfaces.
+
+You can switch between Chinese and English. If you find any features uncomfortable or distracting, you can pause or hide the desktop pet, or disable automatic dialogue. Disabling automatic dialogue will stop both periodic dialogue and dialogue triggered by clicking the desktop pet.
+
+You can adjust the desktop pet's volume or turn the sound off completely. At fixed times, the desktop pet will remind you to drink water, eat, or go to sleep.
+
+The desktop pet supports automatic startup with Windows. If you don't need this feature, you can turn it off in the system settings, or enable it whenever you want.
+
+Click **Notes** in the right-click menu to record daily ideas, inspiration, or important events.
+
+Right-click the desktop pet to switch between different pet forms. **Form 2** has 7 different outfits.
+
+Hold **Ctrl** and scroll the mouse wheel while hovering over the desktop pet to adjust its size.
 
 Release Links/下载链接
-https://github.com/ternatapinellia/defernull-tenna-deskpet/releases/tag/v4.7
+https://github.com/ternatapinellia/defernull-tenna-deskpet/releases/tag/v5.0
 
 下载release界面zip后解压，直接双击desktoppet.exe便可使用。备注：下载后打不开或者打开后立刻关闭请检查电脑安全中心和防火墙是否有放行该软件，大概率被防火墙杀了。
 
@@ -31,15 +43,14 @@ https://github.com/user-attachments/assets/1976eea6-9234-41fb-9144-256ac8ccacea
 
 ——
 
-v4.7更新
+v5.0更新
 
-1.修复了未设置提醒时间的时候桌宠不会开启提醒的问题
+1.添加了桌宠音效，为用原tenna音效改造处理的，添加了音量大小按键，可自行调节声音甚至关闭。
 
-理论上不会再进行更新。
 
 存在的小问题：
 
-2.新闻切换的时候会卡顿30s左右，届时最好不要进行任何操作
+2.新闻切换的时候会卡顿30s左右，届时最好不要进行任何操作，刚打开桌宠的时候也会卡顿30s左右
 
 3.英文是机翻，可能不准确。英文模式下的对话框提示显示的确认按钮可能会和文字叠加显示
 
@@ -50,6 +61,14 @@ v4.7更新
 7.午夜新闻可能无法筛选到既定的犯罪新闻因而转而使用内置，大概是运气问题
 
 8.午夜新闻，英文版的今日新闻和午夜新闻，共用一个api，该api有每日调用的次数上限，达到上限后会直接使用内置。
+
+——
+
+v4.7更新
+
+1.修复了未设置提醒时间的时候桌宠不会开启提醒的问题
+
+理论上不会再进行更新。
 
 ——
 
