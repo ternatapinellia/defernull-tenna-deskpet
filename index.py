@@ -17,10 +17,10 @@ import re
 from PyQt5.QtWidgets import (QApplication, QWidget, QLabel, QMenu,
                              QPushButton, QGridLayout, QGroupBox,
                              QSpinBox, QCheckBox, QHBoxLayout, QAction, QWidgetAction, QSlider,
-                             QFrame, QVBoxLayout, QSystemTrayIcon,
+                             QVBoxLayout, QSystemTrayIcon,
                              QScrollArea, QPlainTextEdit)
-from PyQt5.QtCore import Qt, QTimer, QPropertyAnimation, QPoint, QTime, QEasingCurve, QDateTime, QEvent, QUrl
-from PyQt5.QtGui import QPixmap, QPainter, QFont, QColor, QPalette, QIcon, QImage
+from PyQt5.QtCore import Qt, QTimer, QPropertyAnimation, QPoint, QTime, QEasingCurve, QEvent, QUrl
+from PyQt5.QtGui import QPixmap, QPainter, QFont, QIcon, QImage
 from PyQt5.QtMultimedia import QSoundEffect
 
 # 导入对话配置
@@ -2639,6 +2639,12 @@ class DesktopPet(QWidget):
         self._reminder_retry_timers = {}
         self._pending_reminders = set()
 
+        # 喝水提醒使用完全独立的状态机：
+        # IDLE -> DISPLAYING -> WAITING_RETRY -> DISPLAYING -> ...
+        # 只有用户 Confirm 才能回到 IDLE。
+        self._drink_state = "IDLE"
+        self._drink_retry_timer = None
+
         # 控制面板/提醒状态跨面板重开保持，并保存到本地，
         # 这样桌宠重新启动后也不会把上一轮提醒计时清零。
         self._control_settings_path = writable_app_path("dnt_control_settings.json")
@@ -2706,6 +2712,10 @@ class DesktopPet(QWidget):
         self.black_screen_hide_timer = QTimer(self)
         self.black_screen_hide_timer.setSingleShot(True)
         self.black_screen_hide_timer.timeout.connect(self._hide_black_screen)
+        # 黑屏闲置计时与对话显示彻底分离。
+        self._black_screen_idle_total_ms = 900000
+        self._black_screen_remaining_ms = self._black_screen_idle_total_ms
+        self._black_screen_timer_started_at = None
 
         # 桌宠缩放：Ctrl + 鼠标滚轮，仅在鼠标位于桌宠上时生效。
         self.pet_zoom = 1.0
@@ -2763,7 +2773,6 @@ class DesktopPet(QWidget):
         self.dialogue_bounce_active = False
         self.dialogue_bounce_elapsed = 0.0
         self.dialogue_session_active = False
-        self._tomato_dialog_interrupt = False
         self._talk_open_session_started = False
 
         # 闲置弹跳定时器
@@ -2951,14 +2960,14 @@ class DesktopPet(QWidget):
         if self.pet_frames and not self.is_displaying and not self._mouth_animation_active:
             self._update_idle_bounce()
 
-        # 切换服装后重新启动黑屏计时器
+        # 切换服装不会重置正常黑屏剩余时间
         self._start_black_screen_timer()
 
     def _load_control_settings(self):
         default_settings = {
             'tomato_minutes': 5,
             'drink_enabled': True,
-            'drink_minutes': 45,
+            'drink_minutes': 45,  # 默认45分钟。
             'sleep_enabled': True,
             'sleep_hour': 22,
             'sleep_min': 0,
@@ -3002,7 +3011,7 @@ class DesktopPet(QWidget):
 
     # ==================== 黑屏图层功能 ====================
     def _start_black_screen_timer(self):
-        """启动黑屏计时器（闲置5秒后显示）"""
+        """启动/继续 DNT 正常15分钟黑屏闲置计时；不会因用户操作而归零。"""
         if not hasattr(self, 'black_screen_timer'):
             return
         self.black_screen_timer.stop()
@@ -3010,18 +3019,13 @@ class DesktopPet(QWidget):
             return
         if getattr(self, '_happy_transition_active', False):
             return
-        # 条件：没有对话、没有番茄钟、没有嘴部动画、没有黑屏正在显示、没有拖拽
-        if (not self.is_displaying and 
-            not self.tomato_display_active and
-            not self._mouth_animation_active and
-            not self._black_screen_active and
-            not self.is_dragging):
-            self.black_screen_timer.start(900000)  # 900秒后显示
 
-    def _show_black_screen(self):
-        """显示黑屏覆盖层：仅 DNT 形态允许显示。"""
-        if getattr(self, 'pet_form', 'dnt') == 'classic' or getattr(self, '_happy_transition_active', False):
-            return
+        # 只有“一个黑屏周期已经结束”时才重新开始15分钟；
+        # 普通对话、便签、提醒、番茄钟等结束后恢复时保留原剩余时间。
+        if self._black_screen_remaining_ms <= 0:
+            self._black_screen_remaining_ms = self._black_screen_idle_total_ms
+
+        # 当前有内容显示时不运行黑屏倒计时，由显示系统结束后恢复剩余时间。
         if (self.is_displaying or
             self.tomato_display_active or
             self._mouth_animation_active or
@@ -3029,28 +3033,34 @@ class DesktopPet(QWidget):
             self.is_dragging):
             return
 
+        self._black_screen_timer_started_at = time.monotonic()
+        self.black_screen_timer.start(max(1, int(self._black_screen_remaining_ms)))
+
+    def _show_black_screen(self):
+        """显示正常15分钟闲置黑屏；新闻5秒黑屏使用独立入口。"""
+        if getattr(self, 'pet_form', 'dnt') == 'classic' or getattr(self, '_happy_transition_active', False):
+            return
+        if (self.is_displaying or
+            self.tomato_display_active or
+            self._mouth_animation_active or
+            self._black_screen_active or
+            self.is_dragging):
+            # 被内容占用时保留本周期状态，稍后由 resume 继续。
+            return
+
         outfit = self.role_renderer.outfits.get(self.current_outfit, {})
         black_screen = outfit.get('black_screen')
-
         if black_screen is None or black_screen.isNull():
             return
 
-        # 保存黑屏前的完整角色帧。
-        # 注意：这里保存的是“角色本体”，不是黑屏替代图。
         self._black_screen_previous_pixmap = self.current_pixmap
-
-        # 当前角色画布已经是完整的400x400合成图；
-        # 黑屏也放到同一画布上，再按照 dnt.save 中该套装自己的
-        # pos + offset 放置，最后一次性显示。
-        combined = self._compose_black_screen_overlay(
-            self.current_pixmap,
-            outfit
-        )
-
+        combined = self._compose_black_screen_overlay(self.current_pixmap, outfit)
         if combined is None or combined.isNull():
             return
 
         self._black_screen_active = True
+        self._black_screen_remaining_ms = 0
+        self._black_screen_timer_started_at = None
         self._set_mouth_frame_centered(combined)
 
         self.black_screen_hide_timer.stop()
@@ -3065,15 +3075,9 @@ class DesktopPet(QWidget):
         if black is None or black.isNull():
             return base_pixmap
 
-        # 角色本体与黑屏保持同一个原始画布尺寸。
         canvas_w = base_pixmap.width()
         canvas_h = base_pixmap.height()
-
-        image = QImage(
-            canvas_w,
-            canvas_h,
-            QImage.Format_ARGB32_Premultiplied
-        )
+        image = QImage(canvas_w, canvas_h, QImage.Format_ARGB32_Premultiplied)
         image.fill(Qt.transparent)
 
         painter = QPainter(image)
@@ -3087,12 +3091,8 @@ class DesktopPet(QWidget):
         except Exception:
             px, py = 0.0, 0.0
 
-        # base_pixmap 同时已经按 self.scale 和当前 pet_zoom 缩放。
-        # 黑屏覆盖层必须使用完全相同的缩放倍率，否则桌宠放大/缩小时，
-        # 黑屏的位置和尺寸会停留在原来的倍率。
         zoom = float(getattr(self, "pet_zoom", 1.0))
         effective_scale = self.scale * zoom
-
         x = int(round(px * effective_scale))
         y = int(round(py * effective_scale))
 
@@ -3102,15 +3102,12 @@ class DesktopPet(QWidget):
             Qt.IgnoreAspectRatio,
             Qt.SmoothTransformation
         )
-
-        # 黑屏的 z-order 固定高于头、身体、嘴巴、服装。
         painter.drawPixmap(x, y, scaled_black)
         painter.end()
-
         return QPixmap.fromImage(image)
 
     def _hide_black_screen(self):
-        """隐藏黑屏覆盖层，恢复完整角色帧。"""
+        """结束正常3秒黑屏并开始新的15分钟周期。"""
         self._black_screen_active = False
         self.black_screen_hide_timer.stop()
 
@@ -3127,22 +3124,45 @@ class DesktopPet(QWidget):
             self.current_pixmap = self.pet_static
 
         self._black_screen_previous_pixmap = None
+        self._black_screen_remaining_ms = self._black_screen_idle_total_ms
+        self._black_screen_timer_started_at = None
         self._start_black_screen_timer()
 
-    def _reset_black_screen_timer(self):
-        """重置黑屏计时器（用户交互时调用）。"""
-        if self._black_screen_active:
-            self._hide_black_screen()
+    def _pause_black_screen_timer(self):
+        """暂停正常黑屏闲置计时，并保留暂停时的剩余时间。"""
+        if not hasattr(self, 'black_screen_timer'):
+            return
+        if not self.black_screen_timer.isActive():
+            return
 
-        if hasattr(self, 'black_screen_timer'):
-            self.black_screen_timer.stop()
+        if self._black_screen_timer_started_at is not None:
+            elapsed_ms = max(0, int((time.monotonic() - self._black_screen_timer_started_at) * 1000))
+            self._black_screen_remaining_ms = max(0, self._black_screen_remaining_ms - elapsed_ms)
 
-            # 对话/嘴部动画/番茄钟期间不启动黑屏。
-            if (not self.is_displaying and
-                not self.tomato_display_active and
-                not self._mouth_animation_active and
-                not self.is_dragging):
-                self.black_screen_timer.start(5000)
+        self.black_screen_timer.stop()
+        self._black_screen_timer_started_at = None
+
+    def _resume_black_screen_timer(self):
+        """恢复正常黑屏闲置计时，不重新从15分钟开始。"""
+        if not hasattr(self, 'black_screen_timer'):
+            return
+        self.black_screen_timer.stop()
+        self._black_screen_timer_started_at = None
+
+        if (getattr(self, 'pet_form', 'dnt') == 'classic' or
+            getattr(self, '_happy_transition_active', False) or
+            self.is_displaying or
+            self.tomato_display_active or
+            self._mouth_animation_active or
+            self._black_screen_active or
+            self.is_dragging):
+            return
+
+        if self._black_screen_remaining_ms <= 0:
+            self._black_screen_remaining_ms = self._black_screen_idle_total_ms
+
+        self._black_screen_timer_started_at = time.monotonic()
+        self.black_screen_timer.start(max(1, int(self._black_screen_remaining_ms)))
 
     # ==================== 稳定角色渲染 ====================
     def _get_pet_render_size(self):
@@ -3327,9 +3347,7 @@ class DesktopPet(QWidget):
         if self.tomato_display_active:
             return
 
-        # 重置黑屏计时器
-        self._reset_black_screen_timer()
-
+        # 黑屏计时与对话弹跳独立，不因对话开始而重置。
         outfit = self.role_renderer.outfits.get(self.current_outfit, {})
         self._dialogue_bounce_cfg = outfit.get('bounce', {})
         
@@ -3411,9 +3429,7 @@ class DesktopPet(QWidget):
         if self.pet_form == 'classic':
             return
 
-        # 重置黑屏计时器
-        self._reset_black_screen_timer()
-
+        # 黑屏计时与嘴部动画独立，不因说话而重置。
         if not self.pet_open_frames:
             return
 
@@ -4019,16 +4035,14 @@ class DesktopPet(QWidget):
 
     def start_tomato_display(self, seconds):
         self.tomato_display_active = True
-        # 暂停黑屏计时器
+        # 番茄钟只接管倒计时显示，不抢占当前对话/提醒。
+        # 当前提示结束后，队列中的内容继续正常显示。
         if hasattr(self, 'black_screen_timer'):
             self.black_screen_timer.stop()
         if self._black_screen_active:
             self._hide_black_screen()
-        if self.is_displaying:
-            self.bubble.typing_timer.stop()
-            self.is_displaying = False
-            self.clear_dialog_timer()
-        self.bubble.show_big_text(self._format_time(seconds))
+        if not self.is_displaying:
+            self.bubble.show_big_text(self._format_time(seconds))
         self.tomato_update_timer.start(1000)
 
     def update_tomato_display(self, seconds):
@@ -4177,14 +4191,10 @@ class DesktopPet(QWidget):
         if event.button() == Qt.LeftButton:
             self.drag_pos = event.globalPos() - self.frameGeometry().topLeft()
             self.is_dragging = False
-            # 重置黑屏计时器
-            self._reset_black_screen_timer()
             self._show_pet_frame_fixed(self.legacy_pet_happy if self.pet_form == 'classic' and not self.legacy_pet_happy.isNull() else self.pet_happy)
             if self.animation_timer_started:
                 self.animation_timer.stop()
         elif event.button() == Qt.RightButton:
-            # 重置黑屏计时器
-            self._reset_black_screen_timer()
             if self.control_panel is not None and self.control_panel.isVisible():
                 self.control_panel.close()
             elif self.news_window is not None and self.news_window.isVisible():
@@ -4270,18 +4280,12 @@ class DesktopPet(QWidget):
         else:
             self.dialog_queue.append(dialog_item)
 
-        # 重置黑屏计时器
-        self._reset_black_screen_timer()
-
-        if self.tomato_display_active:
-            if not interrupt_tomato:
-                return
-            # 用户主动点击/调情时，临时让对话盖住番茄钟；倒计时本身不暂停。
-            self._tomato_dialog_interrupt = True
-            self.bubble.hide()
-            self.is_displaying = False
+        # 重要：加入对话队列不能重置黑屏计时器。
+        # 黑屏是独立的“闲置时间”系统；提醒、便签、随机对话只是进入
+        # 显示队列，不会重置正常的15分钟黑屏计时。
 
         if not self.is_displaying:
+            # 番茄钟运行期间也正常显示队列内容；番茄钟本身继续计时。
             self.show_next_dialog(allow_during_tomato=interrupt_tomato)
 
     def show_next_dialog(self, allow_during_tomato=False):
@@ -4290,10 +4294,11 @@ class DesktopPet(QWidget):
             self.dialogue_session_active = True
             self._start_talking_mouth()
 
-        if self.tomato_display_active and not (allow_during_tomato or getattr(self, '_tomato_dialog_interrupt', False)):
-            return
+        # 番茄钟期间允许所有排队对话显示；allow_during_tomato 参数保留以兼容现有调用。
+        # 番茄钟倒计时不会因此暂停，只在气泡显示期间暂时隐藏倒计时数字。
         self.clear_dialog_timer()
         if self.dialog_queue:
+            self._pause_black_screen_timer()
             self.is_displaying = True
             text, requires_confirmation, reminder_key = self.dialog_queue.pop(0)
             self.current_dialog_requires_confirmation = requires_confirmation
@@ -4320,12 +4325,26 @@ class DesktopPet(QWidget):
 
     def on_dialog_complete(self):
         self.clear_dialog_timer()
+
+        # 重要：提醒必须独占当前气泡，直到用户确认或60秒超时。
+        # 以前这里如果 dialog_queue 里还有普通对话，会在3秒后直接切走提醒，
+        # 同时 Bubble 的60秒确认计时器也会被下一条对话的 start_typing() 停掉，
+        # 导致 reminder_dialog_timeout() 永远不再执行。
+        # 这就是“提醒几次以后就不再提醒”的主要原因。
+        if self.current_dialog_requires_confirmation:
+            self._stop_talking_mouth()
+            self.dialogue_session_active = False
+            self.dialogue_bounce_active = False
+            # Bubble.confirm_timer 继续负责60秒超时。
+            # 在确认/超时之前，dialog_queue 中的其它对话全部保持等待。
+            return
+
         if self.dialog_queue:
             self.dialog_timer = QTimer(self)
             self.dialog_timer.setSingleShot(True)
             self.dialog_timer.timeout.connect(
                 lambda: self.show_next_dialog(
-                    allow_during_tomato=getattr(self, '_tomato_dialog_interrupt', False)
+                    allow_during_tomato=False
                 )
             )
             self.dialog_timer.start(3000)
@@ -4333,18 +4352,13 @@ class DesktopPet(QWidget):
             self._stop_talking_mouth()
             self.dialogue_session_active = False
             self.dialogue_bounce_active = False
-            # 需要确认的提醒由 Bubble 自己的60秒确认计时器控制消失。
-            # 未确认时会进入 reminder_dialog_timeout()，1分钟后重新出现。
-            if self.current_dialog_requires_confirmation:
-                return
             self.dialog_timer = QTimer(self)
             self.dialog_timer.setSingleShot(True)
             self.dialog_timer.timeout.connect(self._finish_dialog_or_resume_tomato)
             self.dialog_timer.start(3000)
 
     def _finish_dialog_or_resume_tomato(self):
-        if getattr(self, '_tomato_dialog_interrupt', False) and self.tomato_display_active:
-            self._tomato_dialog_interrupt = False
+        if self.tomato_display_active:
             self.bubble.hide()
             self.is_displaying = False
             self.current_dialog_requires_confirmation = False
@@ -4363,96 +4377,179 @@ class DesktopPet(QWidget):
         self._fade_and_reset()
 
     def confirm_dialog(self):
-        # 用户点击 Confirm：取消当前提醒的再次提醒计时。
+        # 喝水提醒由独立状态机处理，绝不依赖公共 pending/queue 状态。
+        if self._drink_state == "DISPLAYING" and self.current_reminder_key == "drink":
+            self._drink_state = "IDLE"
+            self._reminder_elapsed['喝水'] = 0
+            if self._drink_retry_timer is not None:
+                self._drink_retry_timer.stop()
+                self._drink_retry_timer.deleteLater()
+                self._drink_retry_timer = None
+            self._pending_reminders.discard("drink")
+            self.current_reminder_key = None
+            self.current_dialog_requires_confirmation = False
+            self.clear_dialog_timer()
+            self.bubble.dismiss()
+            self._resume_dialog_queue_after_reminder()
+            # Confirm 后才重新开始下一轮喝水计时。
+            return
+
+        # 其它提醒继续使用原有逻辑。
         reminder_key = self.current_reminder_key
         if reminder_key:
             self._pending_reminders.discard(reminder_key)
+            if reminder_key == 'drink':
+                self._reminder_elapsed['喝水'] = 0
             timer = self._reminder_retry_timers.pop(reminder_key, None)
             if timer is not None:
                 timer.stop()
                 timer.deleteLater()
-
         self.clear_dialog_timer()
         self.bubble.dismiss()
-        self.is_displaying = False
-        self.current_dialog_requires_confirmation = False
-        self.current_reminder_key = None
-        self.dialogue_bounce_active = False
-        if self.dialog_queue:
-            self.show_next_dialog(
-                allow_during_tomato=getattr(self, '_tomato_dialog_interrupt', False)
-            )
-        elif getattr(self, '_tomato_dialog_interrupt', False) and self.tomato_display_active:
-            self._tomato_dialog_interrupt = False
-            self.dialogue_session_active = False
-            self._stop_talking_mouth()
-            if self.control_panel is not None:
-                self.bubble.show_big_text(
-                    self._format_time(self.control_panel.tomato_remaining)
-                )
-            elif self._tomato_remaining_saved > 0:
-                self.bubble.show_big_text(
-                    self._format_time(self._tomato_remaining_saved)
-                )
-        else:
-            self.dialogue_session_active = False
-            self._stop_talking_mouth()
+        self._resume_dialog_queue_after_reminder()
 
     def add_reminder_dialog(self, reminder_key, dialogue_key):
-        """添加提醒；提醒显示时使用 Tenna -4 半音语音。"""
+        # 喝水提醒完全绕开公共 reminder queue。
+        if reminder_key == "drink":
+            return self._start_drink_reminder()
+
+        if reminder_key in self._pending_reminders:
+            return False
+
         self._pending_reminders.add(reminder_key)
+        lines = get_dialogues(self.lang, dialogue_key)
+        if not lines:
+            self._pending_reminders.discard(reminder_key)
+            return False
+
         self.add_dialog(
-            random.choice(get_dialogues(self.lang, dialogue_key)),
+            random.choice(lines),
             requires_confirmation=True,
             priority=True,
             reminder_key=reminder_key
         )
+        return True
 
-    def is_reminder_pending(self, reminder_key):
-        return reminder_key in self._pending_reminders
+    def _start_drink_reminder(self):
+        """启动一轮喝水提醒。状态机独立于公共 dialog_queue。"""
+        # IDLE = 首次到期；WAITING_RETRY = 未确认后的再次提醒。
+        # 两种状态都允许进入 DISPLAYING。
+        # DISPLAYING 状态本身禁止重复创建，避免同一轮出现多个喝水气泡。
+        if self._drink_state not in ("IDLE", "WAITING_RETRY"):
+            return False
 
-    def reminder_dialog_timeout(self):
-        """提醒显示1分钟仍未确认：消失，空1分钟后再次出现。"""
-        reminder_key = self.current_reminder_key
-        self.bubble.dismiss()
+        lines = get_dialogues(self.lang, "drink")
+        if not lines:
+            return False
+
+        self._drink_state = "DISPLAYING"
+        self._pending_reminders.add("drink")
+        if self.tomato_display_active:
+            self.bubble.hide()
+        self.current_reminder_key = "drink"
+        self.current_dialog_requires_confirmation = True
+        self.is_displaying = True
+        self.dialogue_session_active = True
+        self._start_talking_mouth()
+        self.update_bubble_position()
+        self.tenna_voice_index = 0
+
+        # 直接显示，不经过公共 dialog_queue。
+        self.bubble.start_typing(random.choice(lines), True)
+        return True
+
+    def _drink_wait_for_display(self):
+        """其它对话正在占用气泡时，喝水状态机只等待，不丢失提醒。"""
+        if self._drink_state != "WAITING_RETRY":
+            return
+
+        if self.is_displaying or self.current_dialog_requires_confirmation:
+            self._drink_retry_timer = QTimer(self)
+            self._drink_retry_timer.setSingleShot(True)
+            self._drink_retry_timer.timeout.connect(self._drink_wait_for_display)
+            self._drink_retry_timer.start(1000)
+            return
+
+        self._drink_retry_timer = None
+        self._start_drink_reminder()
+
+    def _resume_dialog_queue_after_reminder(self):
+        """提醒结束后统一把显示权交还给普通对话队列。"""
         self.is_displaying = False
         self.current_dialog_requires_confirmation = False
         self.current_reminder_key = None
         self.dialogue_bounce_active = False
         self.dialogue_session_active = False
         self._stop_talking_mouth()
-
-        if getattr(self, '_tomato_dialog_interrupt', False) and self.tomato_display_active:
-            self._tomato_dialog_interrupt = False
-            if self.control_panel is not None:
-                self.bubble.show_big_text(
-                    self._format_time(self.control_panel.tomato_remaining)
-                )
-            elif self._tomato_remaining_saved > 0:
-                self.bubble.show_big_text(
-                    self._format_time(self._tomato_remaining_saved)
-                )
-
-        if not reminder_key or reminder_key not in self._pending_reminders:
+        if self.dialog_queue:
+            self.show_next_dialog(allow_during_tomato=False)
             return
+        if self.tomato_display_active:
+            if self.control_panel is not None:
+                self.bubble.show_big_text(self._format_time(self.control_panel.tomato_remaining))
+            elif self._tomato_remaining_saved > 0:
+                self.bubble.show_big_text(self._format_time(self._tomato_remaining_saved))
+        self._resume_black_screen_timer()
 
+    def _drink_reminder_timeout(self):
+        """喝水提醒显示60秒未确认：消失，60秒后再次显示。"""
+        if self._drink_state != "DISPLAYING":
+            return
+        self._drink_state = "WAITING_RETRY"
+        if self._drink_retry_timer is not None:
+            self._drink_retry_timer.stop()
+            self._drink_retry_timer.deleteLater()
+        self._drink_retry_timer = QTimer(self)
+        self._drink_retry_timer.setSingleShot(True)
+        self._drink_retry_timer.timeout.connect(self._drink_wait_for_display)
+        self.bubble.dismiss()
+        self._resume_dialog_queue_after_reminder()
+        self._drink_retry_timer.start(60000)
+
+    def is_reminder_pending(self, reminder_key):
+        if reminder_key == "drink":
+            return self._drink_state != "IDLE"
+        return reminder_key in self._pending_reminders
+
+
+    def reminder_dialog_timeout(self):
+        """提醒显示1分钟仍未确认：消失，空1分钟后再次出现。"""
+        if self.current_reminder_key == "drink" or self._drink_state == "DISPLAYING":
+            self._drink_reminder_timeout()
+            return
+        reminder_key = self.current_reminder_key
+        if not reminder_key or reminder_key not in self._pending_reminders:
+            self.bubble.dismiss()
+            self._resume_dialog_queue_after_reminder()
+            return
         old_timer = self._reminder_retry_timers.pop(reminder_key, None)
         if old_timer is not None:
             old_timer.stop()
             old_timer.deleteLater()
-
         retry_timer = QTimer(self)
         retry_timer.setSingleShot(True)
         retry_timer.timeout.connect(lambda key=reminder_key: self._retry_reminder(key))
         self._reminder_retry_timers[reminder_key] = retry_timer
+        self.bubble.dismiss()
+        self._resume_dialog_queue_after_reminder()
         retry_timer.start(60000)
 
     def _retry_reminder(self, reminder_key):
+        # 喝水提醒不再使用公共 retry timer。
+        if reminder_key == "drink":
+            if self._drink_state == "WAITING_RETRY":
+                self._drink_wait_for_display()
+            return
+
         timer = self._reminder_retry_timers.pop(reminder_key, None)
         if timer is not None:
             timer.deleteLater()
+
+        # pending 表示“这项提醒还没有被确认”，而不是“提醒已经在队列里”。
+        # 因此重试时必须允许重新创建一条显示用的对话。
         if reminder_key not in self._pending_reminders:
             return
+
         dialogue_map = {
             'drink': 'drink',
             'lunch': 'lunch',
@@ -4460,16 +4557,39 @@ class DesktopPet(QWidget):
             'sleep': 'sleep'
         }
         dialogue_key = dialogue_map.get(reminder_key)
-        if dialogue_key:
-            self.add_reminder_dialog(reminder_key, dialogue_key)
+        lines = get_dialogues(self.lang, dialogue_key) if dialogue_key else []
+        if not lines:
+            return
+
+        # 重试提醒也只负责“把自己放进显示队列”，不修改其它系统状态。
+        # 使用 append 而不是 insert(0)，避免反复重试的提醒长期霸占队列，
+        # 从而让便签和随机对话永远得不到播放机会。
+        # 如果当前正好已经是同一个提醒，则不重复插入。
+        if self.current_reminder_key == reminder_key and self.current_dialog_requires_confirmation:
+            return
+
+        self.dialog_queue.append(
+            (
+                random.choice(lines),
+                True,
+                reminder_key
+            )
+        )
+
+        # 不在这里重置黑屏计时器：提醒重试属于后台状态机事件，
+        # 不是用户交互，也不能让黑屏重新从15分钟开始计时。
+
+        if not self.is_displaying:
+            self.show_next_dialog(
+                allow_during_tomato=False
+            )
 
     def _fade_and_reset(self):
         self.bubble.fade_out()
         self.is_displaying = False
         self.current_dialog_requires_confirmation = False
         self.dialog_timer = None
-        # 重新启动黑屏计时器
-        self._start_black_screen_timer()
+        self._resume_black_screen_timer()
 
     def _on_pet_click(self):
         if self.auto_dialog_enabled:
@@ -4479,9 +4599,18 @@ class DesktopPet(QWidget):
         self.add_dialog(random.choice(get_dialogues(self.lang, 'flirt')), priority=True, interrupt_tomato=True)
 
     def _random_dialog(self):
-        if (self.auto_dialog_enabled and
-            not self.is_displaying and not self.current_dialog_requires_confirmation):
-            self.add_dialog(random.choice(get_dialogues(self.lang, 'random')))
+        # 随机对话本身不应该因为当前气泡被提醒/便签占用而“丢失”。
+        # 以前这里要求 not self.is_displaying，导致随机对话恰好在提醒显示时
+        # 到点就直接 return；提醒结束后也不会补发，因此看起来像随机对话失效。
+        # 现在统一交给 dialog_queue：当前内容显示完后，随机对话自然继续播放。
+        if not self.auto_dialog_enabled:
+            return
+
+        lines = get_dialogues(self.lang, 'random')
+        if not lines:
+            return
+
+        self.add_dialog(random.choice(lines))
 
     def show_note(self):
         if self.note_window is None:
@@ -4535,10 +4664,12 @@ class DesktopPet(QWidget):
             else:
                 self._reminder_elapsed['喝水'] = int(self._reminder_elapsed.get('喝水', 0))
 
+            # 喝水提醒只由自己的状态机决定。
+            # DISPLAYING / WAITING_RETRY 时绝不重复创建提醒。
             if (self._reminder_elapsed['喝水'] >= drink_minutes
-                    and not self.is_reminder_pending('drink')):
-                self.add_reminder_dialog('drink', 'drink')
-                self._reminder_elapsed['喝水'] = 0
+                    and self._drink_state == "IDLE"):
+                if self._start_drink_reminder():
+                    self._reminder_elapsed['喝水'] = 0
 
         # 午饭 / 晚饭 / 睡觉提醒不依赖控制面板是否存在。
         if hour == 12 and minute == 0 and not self._lunch_triggered and not self.is_reminder_pending('lunch'):
