@@ -19,7 +19,7 @@ Right-click the desktop pet to switch between different pet forms. **Form 2** ha
 Hold **Ctrl** and scroll the mouse wheel while hovering over the desktop pet to adjust its size.
 
 Release Links/下载链接
-https://github.com/ternatapinellia/defernull-tenna-deskpet/releases/tag/v5.0
+https://github.com/ternatapinellia/defernull-tenna-deskpet/releases/tag/v5.1
 
 下载release界面zip后解压，直接双击desktoppet.exe便可使用。备注：下载后打不开或者打开后立刻关闭请检查电脑安全中心和防火墙是否有放行该软件，大概率被防火墙杀了。
 
@@ -27,26 +27,7 @@ After downloading the ZIP file from the Release page, extract it and simply doub
 
 **Note:** If the application cannot be opened after downloading, or closes immediately after launching, please check your computer’s **Windows Security** and **firewall settings** to make sure the application is allowed. In most cases, it is likely being blocked or terminated by the firewall.
 
-
 TIPS:作者后续可能会再度更新对话词条或增设功能，目前版本功能已经完整。
-
-PREVIEW
-
-https://github.com/user-attachments/assets/c6077882-d0bc-42c3-88cf-bf14ebfdd5a3
-
-<img width="570" height="980" alt="屏幕截图 2026-08-26 154427" src="https://github.com/user-attachments/assets/4eb2c11d-4b66-4960-911e-682777d19d23" />
-<img width="570" height="795" alt="屏幕截图 2026-08-26 154359" src="https://github.com/user-attachments/assets/d4c4f48d-5470-4e72-8372-028a94355a14" />
-<img width="432" height="733" alt="屏幕截图 2026-08-26 154313" src="https://github.com/user-attachments/assets/3f362457-11e4-4705-ab82-1a284aafcf10" />
-<img width="482" height="770" alt="屏幕截图 2026-08-26 154302" src="https://github.com/user-attachments/assets/c6f0e9be-ad18-4594-bbfe-57f1d16f0054" />
-
-https://github.com/user-attachments/assets/1976eea6-9234-41fb-9144-256ac8ccacea
-
-——
-
-v5.0更新
-
-1.添加了桌宠音效，为用原tenna音效改造处理的，添加了音量大小按键，可自行调节声音甚至关闭。
-
 
 存在的小问题：
 
@@ -61,6 +42,29 @@ v5.0更新
 7.午夜新闻可能无法筛选到既定的犯罪新闻因而转而使用内置，大概是运气问题
 
 8.午夜新闻，英文版的今日新闻和午夜新闻，共用一个api，该api有每日调用的次数上限，达到上限后会直接使用内置。
+
+PREVIEW
+
+https://github.com/user-attachments/assets/c6077882-d0bc-42c3-88cf-bf14ebfdd5a3
+
+<img width="570" height="980" alt="屏幕截图 2026-08-26 154427" src="https://github.com/user-attachments/assets/4eb2c11d-4b66-4960-911e-682777d19d23" />
+<img width="570" height="795" alt="屏幕截图 2026-08-26 154359" src="https://github.com/user-attachments/assets/d4c4f48d-5470-4e72-8372-028a94355a14" />
+<img width="432" height="733" alt="屏幕截图 2026-08-26 154313" src="https://github.com/user-attachments/assets/3f362457-11e4-4705-ab82-1a284aafcf10" />
+<img width="482" height="770" alt="屏幕截图 2026-08-26 154302" src="https://github.com/user-attachments/assets/c6f0e9be-ad18-4594-bbfe-57f1d16f0054" />
+
+https://github.com/user-attachments/assets/1976eea6-9234-41fb-9144-256ac8ccacea
+
+——
+
+v5.1更新
+
+修复了提醒会被便签系统顶掉再也不显示的bug，修复了番茄钟期间不显示提醒的bug
+
+——
+
+v5.0更新
+
+1.添加了桌宠音效，为用原tenna音效改造处理的，添加了音量大小按键，可自行调节声音甚至关闭。
 
 ——
 
