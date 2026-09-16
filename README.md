@@ -19,7 +19,7 @@ Right-click the desktop pet to switch between different pet forms. **Form 2** ha
 Hold **Ctrl** and scroll the mouse wheel while hovering over the desktop pet to adjust its size.
 
 Release Links/下载链接
-https://github.com/ternatapinellia/defernull-tenna-deskpet/releases/tag/v5.1
+https://github.com/ternatapinellia/defernull-tenna-deskpet/releases/tag/V5.1
 
 下载release界面zip后解压，直接双击desktoppet.exe便可使用。备注：下载后打不开或者打开后立刻关闭请检查电脑安全中心和防火墙是否有放行该软件，大概率被防火墙杀了。
 
