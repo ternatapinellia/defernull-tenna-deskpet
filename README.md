@@ -35,8 +35,6 @@ TIPS:作者后续可能会再度更新对话词条或增设功能，目前版本
 
 3.英文是机翻，可能不准确。英文模式下的对话框提示显示的确认按钮可能会和文字叠加显示
 
-4.控制面板，新闻，便签窗口位置不固定，可能会发生随机位移
-
 6.英文版新闻界面会出现单条无法完全显示英文字符的情况。
 
 7.午夜新闻可能无法筛选到既定的犯罪新闻因而转而使用内置，大概是运气问题
@@ -53,6 +51,12 @@ https://github.com/user-attachments/assets/c6077882-d0bc-42c3-88cf-bf14ebfdd5a3
 <img width="482" height="770" alt="屏幕截图 2026-08-26 154302" src="https://github.com/user-attachments/assets/c6f0e9be-ad18-4594-bbfe-57f1d16f0054" />
 
 https://github.com/user-attachments/assets/1976eea6-9234-41fb-9144-256ac8ccacea
+
+——
+
+v6.0更新
+
+修复了控制面板等会随机移动位置的bug，修复了刚启动的时候会弹出喝水提醒的bug。
 
 ——
 
