@@ -19,7 +19,7 @@ Right-click the desktop pet to switch between different pet forms. **Form 2** ha
 Hold **Ctrl** and scroll the mouse wheel while hovering over the desktop pet to adjust its size.
 
 Release Links/下载链接
-https://github.com/ternatapinellia/defernull-tenna-deskpet/releases/tag/V6.0
+https://github.com/ternatapinellia/defernull-tenna-deskpet/releases/tag/V6.1
 
 下载release界面zip后解压，直接双击desktoppet.exe便可使用。备注：下载后打不开或者打开后立刻关闭请检查电脑安全中心和防火墙是否有放行该软件，大概率被防火墙杀了。
 
@@ -31,15 +31,9 @@ TIPS:作者后续可能会再度更新对话词条或增设功能，目前版本
 
 存在的小问题：
 
-2.新闻切换的时候会卡顿30s左右，届时最好不要进行任何操作，刚打开桌宠的时候也会卡顿30s左右
+3.英文是机翻，可能不准确。
 
-3.英文是机翻，可能不准确。英文模式下的对话框提示显示的确认按钮可能会和文字叠加显示
-
-6.英文版新闻界面会出现单条无法完全显示英文字符的情况。
-
-7.午夜新闻可能无法筛选到既定的犯罪新闻因而转而使用内置，大概是运气问题
-
-8.午夜新闻，英文版的今日新闻和午夜新闻，共用一个api，该api有每日调用的次数上限，达到上限后会直接使用内置。
+8.午夜新闻api有每日调用的次数上限，达到上限后会直接使用内置。
 
 PREVIEW
 
@@ -51,6 +45,12 @@ https://github.com/user-attachments/assets/c6077882-d0bc-42c3-88cf-bf14ebfdd5a3
 <img width="482" height="770" alt="屏幕截图 2026-08-26 154302" src="https://github.com/user-attachments/assets/c6f0e9be-ad18-4594-bbfe-57f1d16f0054" />
 
 https://github.com/user-attachments/assets/1976eea6-9234-41fb-9144-256ac8ccacea
+
+——
+
+v6.1更新
+
+修复了新闻面板导致整个桌宠未响应卡顿的问题，修复了英文新闻不能完整显示的问题，修复了英文可能遮盖按钮的问题。
 
 ——
 
