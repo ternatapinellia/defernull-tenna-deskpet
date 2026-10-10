@@ -9,18 +9,22 @@ import random
 import math
 import json
 import urllib.request
+import urllib.parse
 import urllib.error
 import time
+import threading
+import queue
 import winreg
 import base64
 import re
 from PyQt5.QtWidgets import (QApplication, QWidget, QLabel, QMenu,
-                             QPushButton, QGridLayout, QGroupBox,
+                             QPushButton, QGridLayout, QGroupBox, QSizePolicy,
                              QSpinBox, QCheckBox, QHBoxLayout, QAction, QWidgetAction, QSlider,
                              QVBoxLayout, QSystemTrayIcon,
                              QScrollArea, QPlainTextEdit)
-from PyQt5.QtCore import Qt, QTimer, QPropertyAnimation, QPoint, QTime, QEasingCurve, QEvent, QUrl
-from PyQt5.QtGui import QPixmap, QPainter, QFont, QIcon, QImage
+from PyQt5.QtCore import (Qt, QTimer, QPropertyAnimation, QPoint, QTime,
+                          QEasingCurve, QEvent, QUrl, QThread, pyqtSignal)
+from PyQt5.QtGui import QPixmap, QPainter, QFont, QIcon, QImage, QRegion
 from PyQt5.QtMultimedia import QSoundEffect
 
 # 导入对话配置
@@ -65,20 +69,72 @@ APITUBE_KEY = "api_live_hXW9AASSeVaFonFfjTYd7ft604DkPc2e6uF3s0eU9pQNZWxW3gFATTG6
 APITUBE_BASE_URL = "https://api.apitube.io/v1/news/everything"
 
 # ---------- 午夜新闻关键词（英文） ----------
+# 只保留“真的发生了犯罪行为”的词。原版把 "suspect" / "police shooting" / "sentence"
+# 之类的软词也当成命中条件，结果娱乐/影视类文章（"murder mystery"、"shooting a film"）
+# 大量混进午夜新闻，真正的犯罪报道反而被顶掉。
 MIDNIGHT_KEYWORDS = [
-    "murder", "homicide", "killing", "slaying", "manslaughter",
-    "shooting", "gunfire", "mass shooting", "active shooter",
-    "stabbing", "knife attack", "violent crime",
-    "sexual assault", "rape", "molestation",
-    "robbery", "burglary", "theft", "larceny", "carjacking",
-    "drug trafficking", "gang violence", "organized crime",
-    "cartel", "mafia", "gang shooting",
-    "arson", "terrorism", "terrorist attack", "bombing",
-    "kidnapping", "hostage", "abduction", "human trafficking",
-    "domestic violence", "assault", "battery",
-    "arrest", "indictment", "conviction", "sentence",
-    "police shooting", "manhunt", "fugitive", "suspect"
+    "murder", "murder-suicide", "homicide", "manslaughter", "killing", "slaying",
+    "shot dead", "shot and killed", "fatal shooting", "gunshot", "mass shooting",
+    "school shooting", "opened fire", "stabbing", "stabbed", "knife attack",
+    "machete attack", "sexual assault", "rape", "molestation", "sexual abuse",
+    "robbery", "armed robbery", "burglary", "carjacking", "home invasion",
+    "drug trafficking", "drug bust", "narcotics", "gang violence", "organized crime",
+    "cartel", "mafia", "arson", "terrorism", "terrorist attack", "bombing",
+    "bomb blast", "kidnapping", "hostage", "abduction", "human trafficking",
+    "domestic violence", "child abuse", "smuggling", "drug ring",
 ]
+
+# 真实案件报道几乎一定会出现的语境词。只有“犯罪词 + 语境词”同时命中才算数，
+# 这样就不会把电影/小说/榜单里的同名词汇混进来。
+MIDNIGHT_CONTEXT_WORDS = [
+    "police", "arrest", "arrested", "detained", "indictment", "indicted", "convicted",
+    "conviction", "sentenced", "prosecutor", "prosecution", "suspect", "suspects",
+    "investigation", "investigators", "manhunt", "fugitive", "prison", "jail", "court",
+    "trial", "charged", "criminal", "victim", "attorney", "jury", "guilty", "pleads",
+    "custody", "officers", "detectives", "sheriff", "warrant", "accused", "alleged",
+]
+
+# 标题里出现这些词，说明是影视/书籍/榜单类内容，直接排除。
+MIDNIGHT_BLOCKLIST = [
+    "murder mystery", "true crime", "netflix", "trailer", "box office", "film festival",
+    "movie", "film", "tv series", "tv show", "episode", "actor", "actress", "novel",
+    "documentary", "podcast", "video game", "crossword", "quiz", "book review",
+    "thriller", "orient express",
+]
+
+# 第一轮拉取使用：按「最可能出犯罪新闻」的标题词各查一页，扩充候选池。
+MIDNIGHT_SEARCH_TERMS = ["police arrest", "murder", "shooting", "robbery", "kidnapping", "crime"]
+# ---------- 午夜新闻匹配工具 ----------
+def _midnight_match_text(article):
+    """把一条新闻的标题、摘要、分类拼成一段用于匹配的文本。
+
+    第 7 条：原版只看 title，命中率低。description / categories 里
+    其实带有更明确的犯罪相关词，一起匹配能明显减少“筛不到就回退内置”。
+    """
+    parts = [str(article.get("title") or ""), str(article.get("description") or "")]
+    for cat in (article.get("categories") or []):
+        if isinstance(cat, dict):
+            parts.append(str(cat.get("name") or ""))
+    return " ".join(parts).lower()
+
+
+def _is_midnight_article(article):
+    title = str(article.get("title") or "").lower()
+    # 影视/书籍/榜单类文章经常带 murder / shooting 之类的词，先直接排除。
+    if any(bad in title for bad in MIDNIGHT_BLOCKLIST):
+        return False
+    text = _midnight_match_text(article)
+    # 必须同时命中「犯罪词」和「案件语境词」，纯娱乐内容不会两者都满足。
+    if not any(kw in text for kw in MIDNIGHT_KEYWORDS):
+        return False
+    if any(w in text for w in MIDNIGHT_CONTEXT_WORDS):
+        return True
+    # 分类直接标了 crime / law / justice 的，也算真实案件。
+    cats = " ".join(
+        str(c.get("name") or "").lower()
+        for c in (article.get("categories") or []) if isinstance(c, dict)
+    )
+    return ("crime" in cats) or ("law" in cats) or ("justice" in cats)
 
 # ---------- 资源路径处理 ----------
 def resource_path(relative_path):
@@ -177,61 +233,165 @@ _midnight_cache_en = None
 _midnight_cache_time_zh = 0
 _midnight_cache_time_en = 0
 
-# ---------- 翻译函数 ----------
+# 抓取结果只放内存，绝不写进安装目录（安装目录可能不可写）。
+_cached_news_payload = {}
+
+# 后台抓取线程 -> 主线程 的通知通道。
+_news_fetch_queue = queue.Queue()
+
+# 同一时间只允许一个抓取线程，避免多窗口/多语言并发打爆 API 额度。
+_news_fetch_lock = threading.Lock()
+
+# 活动抓取线程登记表：必须持有引用，否则 QThread 可能在运行途中被
+# 垃圾回收析构，导致 "QThread: Destroyed while thread is still running"。
+_active_news_workers = []
+
+# ---------- 翻译函数（Bing / cn.bing.com，国内可直连） ----------
+_bing_session = {"op": None, "ig": None, "key": None, "token": None, "ts": 0.0}
+_BING_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+_translate_cache = {}
+
+
+def _bing_new_session():
+    """建立/刷新 cn.bing.com 翻译会话，取得 IG 与 AbusePrevention token。"""
+    import http.cookiejar
+    cj = http.cookiejar.CookieJar()
+    op = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cj))
+    op.addheaders = [("User-Agent", _BING_UA), ("Referer", "https://cn.bing.com/translator")]
+    html = op.open("https://cn.bing.com/translator", timeout=20).read().decode("utf-8", "replace")
+    ig = re.search(r'IG:"([A-Za-z0-9]+)"', html)
+    key = re.search(r'params_AbusePreventionHelper\s*=\s*\[\s*(\d+)\s*,\s*"([^"]+)"', html)
+    if not ig or not key:
+        raise RuntimeError("无法解析 Bing 翻译会话参数")
+    _bing_session.update({"op": op, "ig": ig.group(1), "key": key.group(1),
+                          "token": key.group(2), "ts": time.time()})
+
+
+def _bing_ensure_session():
+    # 会话约 10 分钟有效；过期或缺失则重建。
+    if _bing_session["op"] is None or (time.time() - _bing_session["ts"]) > 600:
+        _bing_new_session()
+
+
+def _bing_translate(text, to="zh-Hans"):
+    """调用 Bing ttranslatev3 翻译单条文本。失败时返回 None。"""
+    import urllib.parse
+    for attempt in (1, 2):
+        try:
+            _bing_ensure_session()
+            body = urllib.parse.urlencode({
+                "fromLang": "en", "text": text, "to": to,
+                "token": _bing_session["token"], "key": _bing_session["key"],
+            }).encode()
+            url = ("https://cn.bing.com/ttranslatev3?isVertical=1"
+                   f"&IG={_bing_session['ig']}&IID=translator.5024")
+            req = urllib.request.Request(url, data=body, headers={
+                "User-Agent": _BING_UA,
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Referer": "https://cn.bing.com/translator",
+            })
+            data = json.loads(_bing_session["op"].open(req, timeout=20).read().decode("utf-8", "replace"))
+            if isinstance(data, list) and data:
+                return data[0]["translations"][0]["text"]
+            if isinstance(data, dict) and data.get("translations"):
+                return data["translations"][0]["text"]
+            return None
+        except Exception as e:
+            print(f"Bing 翻译失败(第{attempt}次): {e}")
+            _bing_session["op"] = None   # 强制下次重建会话
+    return None
+
+
 def translate_to_chinese(text):
-    """使用谷歌翻译将英文翻译为中文"""
-    try:
-        # 尝试导入googletrans，如果不可用则跳过
-        from googletrans import Translator
-        translator = Translator()
-        result = translator.translate(text, src='en', dest='zh-cn')
-        return result.text
-    except Exception as e:
-        print(f"翻译失败: {e}")
+    """把英文新闻标题翻译为中文（Bing，带缓存）。失败时回退原文。"""
+    if not text:
         return text
+    if text in _translate_cache:
+        return _translate_cache[text]
+    zh = _bing_translate(text)
+    if not zh:
+        return text          # 取不到译文时保留英文原文，至少不丢内容
+    _translate_cache[text] = zh
+    return zh
 
 # ---------- 中文新闻API ----------
+def _parse_aihot(data):
+    """AIHOT 接口：数据在 items，链接在 links.original / links.aihot。
+
+    原版读的是 data / item.link，字段名完全对不上，导致这个唯一可用的
+    中文新闻源被当成失败源丢弃。
+    """
+    if not isinstance(data, dict):
+        return None
+    items = data.get("items")
+    if not items:
+        return None
+    out = []
+    for it in items[:30]:
+        links = it.get("links") or {}
+        url = links.get("original") or links.get("aihot") or "#"
+        title = (it.get("title") or "").strip()
+        if title:
+            out.append({"title": title, "url": url})
+    return out or None
+
+
+def _parse_newsnow(data):
+    """newsnow.busiyi.world 聚合源：{status, items:[{title,url,mobileUrl}]}"""
+    if not isinstance(data, dict):
+        return None
+    items = data.get("items")
+    if not items:
+        return None
+    out = []
+    for it in items[:30]:
+        title = (it.get("title") or "").strip()
+        url = it.get("url") or it.get("mobileUrl") or "#"
+        if title:
+            out.append({"title": title, "url": url})
+    return out or None
+
+
 def fetch_news_zh():
     """获取中文今日新闻，并使用独立中文缓存。"""
+    cached = _cached_news_payload.get('today:zh')
+    if cached:
+        return list(cached)
     global _news_cache_zh, _cache_time_zh
     current_time = time.time()
-    if _news_cache_zh is not None and (current_time - _cache_time_zh) < CACHE_DURATION:
+    if _news_cache_zh is not None and _cache_time_zh == _today_key():
         return _news_cache_zh.copy()
 
+    # 原版有三个问题：
+    #   1) aihot 的字段名解析写错（读 data/link，实际是 items/links），
+    #      唯一可用的源因此被丢弃；
+    #   2) 60s.viki.moe 现在返回 403；
+    #   3) hot.imsyy.top 两个端点已失效（返回网页 HTML）。
+    # 结果每个源都失败，于是永远回退内置新闻。这里修正字段名，
+    # 并换成实测可直连的源。
     apis = [
-        {
-            "url": "https://aihot.virxact.com/api/v1/items",
-            "params": {"mode": "selected", "window": "7d", "limit": 30},
-            "parser": lambda data: [
-                {"title": item.get("title", ""), "url": item.get("link", "#")}
-                for item in data.get("data", [])[:30]
-            ] if isinstance(data, dict) and data.get("data") else None
-        },
-        {
-            "url": "https://60s.viki.moe/v2/it-news",
-            "params": {},
-            "parser": lambda data: [
-                {"title": item.get("title", ""), "url": item.get("link", "#")}
-                for item in data.get("data", [])[:30]
-            ] if data.get("code") == 200 else None
-        },
-        {
-            "url": "https://hot.imsyy.top/api/thepaper",
-            "params": {},
-            "parser": lambda data: [
-                {"title": item.get("title", ""), "url": item.get("url", "#")}
-                for item in data.get("data", [])[:30]
-            ] if data.get("code") == 200 else None
-        },
-        {
-            "url": "https://hot.imsyy.top/api/zhihu",
-            "params": {},
-            "parser": lambda data: [
-                {"title": item.get("title", ""), "url": item.get("url", "#")}
-                for item in data.get("data", [])[:30]
-            ] if data.get("code") == 200 else None
-        }
+        {"name": "AIHOT", "url": "https://aihot.virxact.com/api/v1/items",
+         "params": {"mode": "selected", "window": "7d", "limit": 30},
+         "parser": _parse_aihot},
+        {"name": "澎湃新闻", "url": "https://newsnow.busiyi.world/api/s?id=thepaper",
+         "params": {}, "parser": _parse_newsnow},
+        {"name": "知乎热榜", "url": "https://newsnow.busiyi.world/api/s?id=zhihu",
+         "params": {}, "parser": _parse_newsnow},
+        {"name": "IT之家", "url": "https://newsnow.busiyi.world/api/s?id=ithome",
+         "params": {}, "parser": _parse_newsnow},
+        {"name": "今日头条", "url": "https://newsnow.busiyi.world/api/s?id=toutiao",
+         "params": {}, "parser": _parse_newsnow},
+        {"name": "少数派", "url": "https://newsnow.busiyi.world/api/s?id=sspai",
+         "params": {}, "parser": _parse_newsnow},
     ]
+
+    headers = {
+        "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                       "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"),
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "zh-CN,zh;q=0.9",
+    }
 
     raw_news = None
     for api in apis:
@@ -240,31 +400,36 @@ def fetch_news_zh():
             if api.get("params"):
                 param_str = "&".join([f"{k}={v}" for k, v in api["params"].items()])
                 url = f"{url}?{param_str}"
-            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-            with urllib.request.urlopen(req, timeout=10) as response:
+            req = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(req, timeout=12) as response:
                 data = json.loads(response.read().decode('utf-8'))
-                news_list = api["parser"](data)
-                if news_list and len(news_list) > 0:
-                    print(f"成功从 {api['url']} 获取中文新闻，共 {len(news_list)} 条")
-                    raw_news = news_list
-                    break
+            news_list = api["parser"](data)
+            if news_list:
+                print(f"成功从 {api['name']} 获取中文新闻，共 {len(news_list)} 条")
+                raw_news = news_list
+                break
         except Exception as e:
-            print(f"API {api['url']} 失败: {e}")
+            print(f"中文新闻源 {api['name']} 失败: {e}")
             continue
 
     if not raw_news:
         return None
 
     _news_cache_zh = raw_news
-    _cache_time_zh = current_time
+    _cache_time_zh = _today_key()
+    _cached_news_payload['today:zh'] = raw_news
     return raw_news.copy()
+
 
 # ---------- 英文新闻API (APITube - 使用urllib) ----------
 def fetch_news_en():
     """获取英文今日新闻；英文缓存与中文完全分离。"""
+    cached = _cached_news_payload.get('today:en')
+    if cached:
+        return list(cached)
     global _news_cache_en, _cache_time_en
     current_time = time.time()
-    if _news_cache_en is not None and (current_time - _cache_time_en) < CACHE_DURATION:
+    if _news_cache_en is not None and _cache_time_en == _today_key():
         return _news_cache_en.copy()
 
     try:
@@ -281,78 +446,206 @@ def fetch_news_en():
                     ]
                     if news:
                         _news_cache_en = news
-                        _cache_time_en = current_time
+                        _cache_time_en = _today_key()
+                        _cached_news_payload['today:en'] = news
                         print(f"APITube 获取英文新闻，共 {len(news)} 条")
                         return news.copy()
     except Exception as e:
         print(f"英文新闻获取失败: {e}")
     return None
 
+# ---------- 午夜新闻每日缓存（磁盘） ----------
+# 午夜新闻的 APITube 是限量 API。为了把额度消耗压到每天一次，抓取结果会连
+# 标题一起落到用户目录的 JSON 里，并记录所属日期（本地 0 点为准）。
+#   - 同一天内：中文/英文都直接从这个文件读，不再请求 API。
+#   - 跨过 0 点：日期不匹配则自动重新抓取一次，再写入新文件。
+# 放在 %LOCALAPPDATA% 而不是安装目录，避免 Program Files 之类只读目录写不进去。
+# 每个用户各自持有一份，所以别人拿到程序后第一次打开就会自动抓取并生成缓存。
+MIDNIGHT_CACHE_FILE = "news_cache_midnight.json"
+
+
+def _midnight_cache_path():
+    base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+    folder = os.path.join(base, "DNT-DeskPet")
+    try:
+        os.makedirs(folder, exist_ok=True)
+    except Exception:
+        folder = os.path.expanduser("~")
+    return os.path.join(folder, MIDNIGHT_CACHE_FILE)
+
+
+def _today_key():
+    """本地日期字符串，用于判断缓存是否还是今天抓的。"""
+    return time.strftime("%Y-%m-%d", time.localtime())
+
+
+def _load_midnight_cache():
+    """读取磁盘缓存。返回 dict 或 None（不存在 / 不是今天的 / 损坏）。"""
+    try:
+        with open(_midnight_cache_path(), "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        return None
+    if not isinstance(data, dict) or data.get("date") != _today_key():
+        return None
+    return data
+
+
+def _save_midnight_cache(date_key, en=None, zh=None):
+    """写入/更新今天的缓存文件，保留已有的另一种语言。"""
+    data = _load_midnight_cache()
+    if data is None:
+        data = {}
+    data["date"] = date_key
+    if en is not None:
+        data["en"] = en
+    if zh is not None:
+        data["zh"] = zh
+    try:
+        with open(_midnight_cache_path(), "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=1)
+    except Exception as e:
+        print(f"午夜新闻缓存写入失败: {e}")
+
+
 # ---------- 午夜新闻（统一接口，支持中英文 - 纯urllib） ----------
-def fetch_midnight_news(lang='zh'):
+def _fetch_midnight_pool():
+    """抓一次 APITube，返回筛选好的英文犯罪新闻列表（中英文共用同一批结果）。
+
+    第 7/8 条：
+    APITube 免费额度是「每分钟 10 次请求 + 每天 100 点」，单次 per_page 上限 10，
+    page 最多翻到第 5 页，而且 category / search 这类服务端筛选参数无效。
+    所以这里按「警察/谋杀/枪击/抢劫/绑架/犯罪」这些高命中标题词各查一页，
+    用「犯罪词 + 语境词」双重匹配筛出真实案件，并排除影视/榜单内容。
+
+    注意：本函数每次调用都会真的请求 API，只应由 fetch_midnight_news 在
+    “今天还没有缓存”时调用一次；抓到的结果会写进磁盘缓存，当天不再重复抓。
     """
-    获取午夜新闻。
-    中文和英文使用完全独立的缓存：
-    - 英文：直接显示 APITube 英文犯罪新闻
-    - 中文：对筛选后的英文犯罪新闻逐条翻译
-    同一种语言首次得到有效结果后，本次运行内保持该语言自己的结果。
+    # 只看最近 3 天，避免旧新闻被翻上来。
+    now = time.time()
+    window_start = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(now - 3 * 86400))
+    window_end = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(now))
+
+    articles = []
+    seen_ids = set()
+    for term in MIDNIGHT_SEARCH_TERMS:
+        url = (f"{APITUBE_BASE_URL}?api_key={APITUBE_KEY}"
+               f"&language.code=en&per_page=10"
+               f"&published_at.start={window_start}&published_at.end={window_end}"
+               f"&title={urllib.parse.quote(term)}")
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        try:
+            with urllib.request.urlopen(req, timeout=15) as response:
+                data = json.loads(response.read().decode('utf-8'))
+        except Exception as e:
+            # 429（每分钟超过 10 次）或超时：保留已经拿到的部分，不再继续。
+            print(f"午夜新闻查询「{term}」失败: {e}")
+            break
+        if not (isinstance(data, dict) and data.get("status") == "ok"):
+            print(f"APITube 返回错误: {str(data)[:120]}")
+            break
+        for article in data.get("results", []) or []:
+            key = article.get("id") or article.get("title")
+            if not key or key in seen_ids:
+                continue
+            seen_ids.add(key)
+            articles.append(article)
+        # 查询之间稍等一下，避免触发每分钟 10 次的限流。
+        time.sleep(0.4)
+
+    filtered_news = []
+    seen_titles = set()
+    for article in articles:
+        title = article.get("title", "")
+        if not title or title in seen_titles:
+            continue
+        if _is_midnight_article(article):
+            seen_titles.add(title)
+            filtered_news.append({
+                "title": title,
+                "url": article.get("href", "#")
+            })
+
+    print(f"APITube 共取到 {len(articles)} 条新闻，筛选后保留 {len(filtered_news)} 条犯罪新闻")
+    return filtered_news
+
+
+def fetch_midnight_news(lang='zh'):
+    """获取午夜新闻，结果按“本地自然日”缓存，一天只消耗一次 API 额度。
+
+    流程：
+      1) 先看磁盘缓存；如果缓存是今天抓的，直接返回（中英文都命中同一批结果）。
+      2) 缓存过期（跨过 0 点）或不存在时，才真正请求 APITube 一次，
+         筛选出犯罪新闻后写入缓存。
+      3) 当天英文直接读缓存；中文拿英文结果逐条翻译，译文也一并写进缓存，
+         所以同一天里中英文来回切换都不会再请求 API。
     """
     global _midnight_cache_zh, _midnight_cache_en
     global _midnight_cache_time_zh, _midnight_cache_time_en
 
     is_en = (lang == 'en')
-    if is_en and _midnight_cache_en is not None:
-        return _midnight_cache_en.copy()
-    if not is_en and _midnight_cache_zh is not None:
-        return _midnight_cache_zh.copy()
+    cache_key = 'midnight:' + ('en' if is_en else 'zh')
 
+    # 1) 进程内缓存（同一次运行里最快的一层）。
+    cached = _cached_news_payload.get(cache_key)
+    if cached is not None:
+        return list(cached)
+
+    # 2) 磁盘缓存：同一天内直接复用，完全不碰 API。
+    disk = _load_midnight_cache()
+    if disk is not None:
+        en_items = disk.get("en")
+        if isinstance(en_items, list) and en_items:
+            _cached_news_payload['midnight:en'] = list(en_items)
+            _midnight_cache_en = list(en_items)
+        if is_en and isinstance(en_items, list) and en_items:
+            return list(en_items)
+        zh_items = disk.get("zh")
+        if isinstance(zh_items, list) and zh_items:
+            _cached_news_payload['midnight:zh'] = list(zh_items)
+            _midnight_cache_zh = list(zh_items)
+            if not is_en:
+                return list(zh_items)
+        # 英文结果在，但中文译文那天还没生成过 → 用缓存的英文结果翻译（不碰 API）。
+        if not is_en and isinstance(en_items, list) and en_items:
+            print("正在翻译中文午夜新闻标题（使用今日缓存）...")
+            translated_news = [
+                {"title": translate_to_chinese(item.get("title", "")), "url": item.get("url", "#")}
+                for item in en_items
+            ]
+            _midnight_cache_zh = translated_news
+            _cached_news_payload['midnight:zh'] = translated_news
+            _save_midnight_cache(_today_key(), zh=translated_news)
+            return list(translated_news)
+
+    # 3) 今天还没有缓存（或只有一种语言）→ 抓取一次。
     current_time = time.time()
-    try:
-        url = f"{APITUBE_BASE_URL}?api_key={APITUBE_KEY}&language.code=en&per_page=10"
-        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(req, timeout=15) as response:
-            data = json.loads(response.read().decode('utf-8'))
-            if data.get("status") == "ok":
-                articles = data.get("results", [])
-                if articles:
-                    filtered_news = []
-                    for article in articles:
-                        title = article.get("title", "")
-                        if any(keyword.lower() in title.lower() for keyword in MIDNIGHT_KEYWORDS):
-                            filtered_news.append({
-                                "title": title,
-                                "url": article.get("href", "#")
-                            })
+    filtered_news = _fetch_midnight_pool()
 
-                    print(f"APITube 获取到 {len(articles)} 条新闻，筛选后保留 {len(filtered_news)} 条犯罪新闻")
+    if filtered_news:
+        result_en = list(filtered_news)
+        _midnight_cache_en = result_en
+        _midnight_cache_time_en = current_time
+        _cached_news_payload['midnight:en'] = result_en
 
-                    if filtered_news:
-                        if is_en:
-                            result = filtered_news
-                            _midnight_cache_en = result
-                            _midnight_cache_time_en = current_time
-                            return result.copy()
+        print("正在翻译中文午夜新闻标题...")
+        translated_news = [
+            {"title": translate_to_chinese(item["title"]), "url": item["url"]}
+            for item in result_en
+        ]
+        _midnight_cache_zh = translated_news
+        _midnight_cache_time_zh = current_time
+        _cached_news_payload['midnight:zh'] = translated_news
 
-                        print("正在翻译中文午夜新闻标题...")
-                        translated_news = []
-                        for item in filtered_news:
-                            translated_news.append({
-                                "title": translate_to_chinese(item["title"]),
-                                "url": item["url"]
-                            })
-                        _midnight_cache_zh = translated_news
-                        _midnight_cache_time_zh = current_time
-                        return translated_news.copy()
+        # 一次写盘就把中英文一起存进去，当天之后不再请求 API。
+        _save_midnight_cache(_today_key(), en=result_en, zh=translated_news)
+        return list(result_en if is_en else translated_news)
 
-                    print("没有找到匹配的犯罪新闻，将使用默认午夜新闻")
-                else:
-                    print("APITube 返回空结果，将使用默认午夜新闻")
-            else:
-                print(f"APITube 返回错误: {data.get('message', '未知错误')}")
-    except Exception as e:
-        print(f"午夜新闻获取失败: {e}")
-
-    return get_default_midnight_news(lang)
+    print("没有找到匹配的犯罪新闻，将使用默认午夜新闻")
+    # 抓取失败或额度用尽：缓存降级结果，避免每次打开都重新请求。
+    fallback = get_default_midnight_news(lang)
+    _cached_news_payload[cache_key] = fallback
+    return list(fallback)
 
 def get_default_midnight_news(lang='zh'):
     """返回默认的午夜新闻"""
@@ -379,6 +672,35 @@ def fetch_news(lang='zh'):
         return fetch_news_en()
     else:
         return fetch_news_zh()
+
+# ---------- 后台新闻抓取线程 ----------
+class NewsFetchWorker(QThread):
+    """在子线程里抓新闻，避免阻塞 Qt 主线程（原版会卡 15~40 秒）。
+
+    结果通过 result_ready 信号发回主线程；主线程只负责刷新界面。
+    """
+
+    result_ready = pyqtSignal(str, object)
+
+    def __init__(self, lang, kind, parent=None):
+        # 不设置 QObject 父对象：窗口关闭/销毁时不会连带销毁仍在运行的线程。
+        super().__init__()
+        self.lang = lang
+        self.kind = kind          # 'today' 或 'midnight'
+
+    def run(self):
+        try:
+            if self.kind == 'midnight':
+                data = fetch_midnight_news(self.lang)
+            else:
+                data = fetch_news(self.lang)
+        except Exception as e:
+            print(f"后台抓取新闻失败: {e}")
+            data = None
+        if self in _active_news_workers:
+            _active_news_workers.remove(self)
+        self.result_ready.emit(self.lang, data)
+
 
 # ---------- 便签文件 ----------
 def get_note_path():
@@ -485,11 +807,15 @@ class BubbleWidget(QWidget):
         self.confirm_button.setText("Confirm" if lang == "en" else "确认")
         screen_w, screen_h = get_screen_size()
         scale = min(screen_w / 1920, screen_h / 1080)
+        # 原版把确认按钮定位在 (width-248, height-105)，正好压在文字区
+        # (130,85)-(470,245) 的最后几行上，英文 "Confirm" 比 "确认" 长时
+        # 与正文叠加（第 3 条）。这里把按钮移到文字区下方的空白带，
+        # 并对文字区右边距对齐，中英文都不再遮挡正文。
         self.confirm_button.setGeometry(
-            self.width() - int(248 * scale),
-            self.height() - int(105 * scale),
+            int(355 * scale),
+            int(252 * scale),
             int(115 * scale),
-            int(38 * scale)
+            int(34 * scale)
         )
         self.confirm_button.setStyleSheet(f"""
             QPushButton {{
@@ -674,7 +1000,7 @@ class BasePanel(QWidget):
         super().__init__(parent)
         self.parent_pet = parent
         self.panel_type = panel_type
-        self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.Tool | Qt.WindowStaysOnTopHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
 
         screen_w, screen_h = get_screen_size()
@@ -702,48 +1028,130 @@ class BasePanel(QWidget):
         painter.drawPixmap(0, 0, self.bg_pixmap)
         super().paintEvent(event)
 
+    def _pet_visible_range(self, pet):
+        """返回桌宠当前帧“可见身体”在 label 内的横向范围 (left, right)。
+
+        桌宠图片四周有大量透明边距（DNT 与 pet1~9 都一样），直接用 label 宽度
+        定位会把透明区域也算进去，导致右侧面板离桌宠很远、甚至压在身上。
+        这里按可见像素计算，并按形态缓存，避免每帧重复扫描。
+        """
+        label = getattr(pet, "label", None)
+
+        # 关键：必须用桌宠的"静止基础帧"测量，而不是 label 里当前那一帧。
+        # 打开新闻面板时桌宠可能正处于 pet-happy 过渡帧或动画帧，那些帧的
+        # 可见宽度和正常帧差很多（实测 vis_r 分别为 844 与 370）。
+        # 今日新闻和午夜新闻是两个独立窗口、创建时机不同，于是各自量到不同
+        # 宽度，分别贴到桌宠身体的不同边缘，两个面板位置就对不上。
+        pm = None
+        if getattr(pet, "pet_form", "dnt") == "classic":
+            frames = getattr(pet, "legacy_pet_frames", None)
+            if frames:
+                pm = frames[0]
+        if pm is None or pm.isNull():
+            pm = getattr(pet, "pet_static", None)
+        label_pm = label.pixmap() if label is not None else None
+        # 只有当基础帧与 label 当前画布尺寸一致时才用它，保证坐标系一致。
+        if pm is None or pm.isNull() or (
+                label_pm is not None and not label_pm.isNull()
+                and (pm.width() != label_pm.width() or pm.height() != label_pm.height())):
+            pm = label_pm
+        if pm is None or pm.isNull():
+            width = label.width() if label is not None else 1
+            return 0, max(1, width - 1)
+
+        # 缓存挂在桌宠对象上，两个面板共用同一次测量结果。
+        key = (getattr(pet, "pet_form", ""), pm.width(), pm.height())
+        cached = getattr(pet, "_pet_visible_cache", None)
+        if cached is not None and cached[0] == key:
+            return cached[1], cached[2]
+
+        try:
+            body = QRegion(pm.mask()).boundingRect()
+        except Exception:
+            body = None
+        if body is None or body.isEmpty():
+            left, right = 0, pm.width() - 1
+        else:
+            left, right = body.left(), body.right()
+        pet._pet_visible_cache = (key, left, right)
+        return left, right
+
     def update_position(self):
-        """按照气泡的屏幕坐标定位面板；只在桌宠窗口真正移动时同步。"""
-        if self.parent_pet is None or not hasattr(self.parent_pet, "bubble"):
+        """左侧沿用气泡锚点；右侧贴着桌宠可见身体边缘，避免透明边距造成过远/压身。"""
+        if self.parent_pet is None or not hasattr(self.parent_pet, "label"):
             return
 
-        bubble = self.parent_pet.bubble
+        pet = self.parent_pet
+        scale = float(getattr(pet, "scale", self.scale))
 
-        # 使用气泡原本的定位逻辑作为唯一坐标基准。
-        if hasattr(self.parent_pet, "update_bubble_position"):
-            self.parent_pet.update_bubble_position()
+        # 同步气泡位置
+        if hasattr(pet, "update_bubble_position"):
+            pet.update_bubble_position()
 
-        bx, by = bubble.get_bubble_position()
+        label = pet.label
+        pet_w = max(1, label.width())
+        pet_h = max(1, label.height())
+        gap = int(round(24 * scale))
 
-        # 控制面板、便签、今日新闻使用完全相同的横向定位逻辑。
-        # 午夜新闻保持原来的独立定位。
-        if self.panel_type in ("control", "note", "news"):
-            panel_x = bx + (bubble.width() - self.width()) // 2 - 800
-        elif self.panel_type == "midnight":
-            panel_x = bx + (bubble.width() - self.width()) // 2 - 1200
+        # 气泡自身的横向偏移（和 update_bubble_position 用同一个常量），
+        # 面板贴在气泡更左侧，避免和气泡重叠。
+        bubble = getattr(pet, "bubble", None)
+        bubble_w = bubble.width() if bubble is not None else 0
+        bubble_offset_x = int(round(300 * scale))
+        bubble_left_rel = label.x() + (pet_w - bubble_w) // 2 - bubble_offset_x
+
+        # 左侧：面板放在气泡左侧，垂直与桌宠居中对齐（保持原有表现）
+        left_rel_x = bubble_left_rel - self.width() - gap
+        # pet1~9（classic）形态下，左侧位置整体右移 500px，靠近桌宠
+        if getattr(pet, "pet_form", "dnt") == "classic":
+            left_rel_x += int(round(500 * scale))
+
+        # 右侧：贴着桌宠可见身体右边缘；基准位置不含待机弹跳偏移，
+        # 这样桌宠弹跳时面板不会跟着抖。
+        vis_l, vis_r = self._pet_visible_range(pet)
+        # label 的静止基准位置（不含待机弹跳偏移），保证面板不随弹跳抖动
+        label_base_x = int(round(pet.width() / 2 - pet_w / 2))
+        label_base_y = int(round(pet.height() / 2 - pet_h / 2))
+        right_rel_x = label_base_x + vis_r + gap
+
+        panel_rel_y = label_base_y + (pet_h - self.height()) // 2
+
+        screen = QApplication.screenAt(
+            pet.mapToGlobal(QPoint(int(label_base_x + pet_w / 2), label_base_y))
+        ) or QApplication.primaryScreen()
+        rect = screen.availableGeometry() if screen is not None else None
+
+        # 选择左侧还是右侧。
+        # 原版把"当前所在侧"记在各自的窗口实例上（_panel_on_right），
+        # 今日新闻和午夜新闻是两个独立实例，可能各自记住不同的一侧，
+        # 于是同一个桌宠位置下两个面板出现在屏幕两边（"新闻界面位移"）。
+        # 现在把选择记录在桌宠上、两个面板共享；两侧都放得下时
+        # 一律采用同一个侧，保证今日新闻与午夜新闻始终出现在同一位置。
+        if rect is not None:
+            origin_x = pet.mapToGlobal(QPoint(0, 0)).x()
+            left_ok = (origin_x + int(left_rel_x)) >= rect.left()
+            right_ok = (origin_x + int(right_rel_x) + self.width()) <= (rect.right() + 1)
+            if left_ok and right_ok:
+                use_right = getattr(pet, "_panel_shared_on_right", False)
+            else:
+                use_right = (not left_ok) and right_ok
         else:
-            panel_x = bx + (bubble.width() - self.width()) // 2
+            use_right = False
+        pet._panel_shared_on_right = use_right
+        self._panel_on_right = use_right
 
-        panel_y = by - self.height() - int(20 * self.scale)
+        panel_rel_x = right_rel_x if use_right else left_rel_x
 
-        # 完整显示：把最终位置限制在当前屏幕可用区域内。
-        screen = QApplication.screenAt(QPoint(
-            int(bx + bubble.width() / 2),
-            int(by + bubble.height() / 2)
-        ))
-        if screen is None:
-            screen = QApplication.primaryScreen()
+        # 垂直越界时只做最小修正，保证面板仍紧贴桌宠
+        if rect is not None:
+            panel_global_y = pet.mapToGlobal(QPoint(0, int(panel_rel_y))).y()
+            corrected_y = max(rect.top(), min(panel_global_y, rect.bottom() - self.height() + 1))
+            panel_rel_y = panel_rel_y + (corrected_y - panel_global_y)
 
-        if screen is not None:
-            rect = screen.availableGeometry()
-            max_x = rect.right() - self.width() + 1
-            max_y = rect.bottom() - self.height() + 1
-            panel_x = max(rect.left(), min(panel_x, max_x))
-            panel_y = max(rect.top(), min(panel_y, max_y))
-
-        self.move(int(panel_x), int(panel_y))
-        self._fixed_x = int(panel_x)
-        self._fixed_y = int(panel_y)
+        # 面板是独立顶层窗口（Qt.Tool），move 使用屏幕坐标
+        self.move(pet.mapToGlobal(QPoint(int(panel_rel_x), int(panel_rel_y))))
+        self._fixed_x = self.x()
+        self._fixed_y = self.y()
         self._position_fixed = True
 
 
@@ -753,7 +1161,7 @@ class NewsWindow(BasePanel):
         super().__init__(parent, panel_type="news")
         self.news_data = []
         self.current_page = 0
-        self.page_size = 5
+        self.page_size = 8
         self.is_loading = False
 
         self.container = QWidget(self)
@@ -923,6 +1331,9 @@ class NewsWindow(BasePanel):
         _news_cache_en = None
         _cache_time_zh = 0
         _cache_time_en = 0
+        # 同时清掉结果缓存，让"刷新"真的重新抓取。
+        _cached_news_payload.pop('today:zh', None)
+        _cached_news_payload.pop('today:en', None)
         self.is_loading = False
         self.fetch_news()
 
@@ -934,12 +1345,16 @@ class NewsWindow(BasePanel):
         self.retry_btn.hide()
         self.prev_btn.setEnabled(False)
         self.next_btn.setEnabled(False)
-        QTimer.singleShot(100, self._do_fetch_news)
+        # 网络请求放到后台线程，主线程先显示"正在加载"，
+        # 不再出现原来 15~40 秒的整窗冻结（第 2/3/8 条）。
+        lang = self.parent_pet.lang if self.parent_pet else 'zh'
+        self._worker = NewsFetchWorker(lang, 'today', self)
+        self._worker.result_ready.connect(self._on_news_ready)
+        _active_news_workers.append(self._worker)
+        self._worker.start()
 
-    def _do_fetch_news(self):
+    def _on_news_ready(self, lang, news_data):
         try:
-            lang = self.parent_pet.lang if self.parent_pet else 'zh'
-            news_data = fetch_news(lang)
             if news_data and len(news_data) > 0:
                 self.news_data = news_data
                 self.loading_label.hide()
@@ -1036,6 +1451,12 @@ class NewsWindow(BasePanel):
                 }}
             """)
             title_label.setWordWrap(True)
+            # 标题必须给定固定宽度：放在 QHBoxLayout 里时 Qt 无法从
+            # heightForWidth 反推容器高度，英文长标题换行后会被裁掉
+            # （第 6 条：英文新闻单条显示不全）。固定宽度后布局能算出
+            # 正确行高，长标题完整显示并随滚动条滚动。
+            title_label.setFixedWidth(int(228 * self.scale))
+            title_label.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
             title_label.setCursor(Qt.PointingHandCursor)
             title_label.mousePressEvent = lambda e, u=url: self.open_url(u)
 
@@ -1105,7 +1526,7 @@ class MidnightNewsWindow(BasePanel):
         super().__init__(parent, panel_type="midnight")
         self.news_data = []
         self.current_page = 0
-        self.page_size = 5
+        self.page_size = 8
         self.is_loading = False
 
         self.container = QWidget(self)
@@ -1276,6 +1697,9 @@ class MidnightNewsWindow(BasePanel):
         _midnight_cache_en = None
         _midnight_cache_time_zh = 0
         _midnight_cache_time_en = 0
+        # 同时清掉结果缓存，让"刷新"真的重新抓取。
+        _cached_news_payload.pop('midnight:zh', None)
+        _cached_news_payload.pop('midnight:en', None)
         self.is_loading = False
         self.fetch_news()
 
@@ -1287,12 +1711,15 @@ class MidnightNewsWindow(BasePanel):
         self.retry_btn.hide()
         self.prev_btn.setEnabled(False)
         self.next_btn.setEnabled(False)
-        QTimer.singleShot(100, self._do_fetch_news)
+        # 同样改为后台线程抓取（第 2/3/8 条）。
+        lang = self.parent_pet.lang if self.parent_pet else 'zh'
+        self._worker = NewsFetchWorker(lang, 'midnight', self)
+        self._worker.result_ready.connect(self._on_news_ready)
+        _active_news_workers.append(self._worker)
+        self._worker.start()
 
-    def _do_fetch_news(self):
+    def _on_news_ready(self, lang, news_data):
         try:
-            lang = self.parent_pet.lang if self.parent_pet else 'zh'
-            news_data = fetch_midnight_news(lang)
             if news_data and len(news_data) > 0:
                 self.news_data = news_data
                 self.loading_label.hide()
@@ -1379,6 +1806,12 @@ class MidnightNewsWindow(BasePanel):
                 }}
             """)
             title_label.setWordWrap(True)
+            # 标题必须给定固定宽度：放在 QHBoxLayout 里时 Qt 无法从
+            # heightForWidth 反推容器高度，英文长标题换行后会被裁掉
+            # （第 6 条：英文新闻单条显示不全）。固定宽度后布局能算出
+            # 正确行高，长标题完整显示并随滚动条滚动。
+            title_label.setFixedWidth(int(228 * self.scale))
+            title_label.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
             title_label.setCursor(Qt.PointingHandCursor)
             title_label.mousePressEvent = lambda e, u=url: self.open_url(u)
 
@@ -2649,8 +3082,16 @@ class DesktopPet(QWidget):
         # 这样桌宠重新启动后也不会把上一轮提醒计时清零。
         self._control_settings_path = writable_app_path("dnt_control_settings.json")
         self._load_control_settings()
+
+        # 开机时绝对不继承上一轮的“喝水已累计分钟”。
+        # 否则如果上次关闭桌宠前已经接近提醒时间，启动后第一分钟就会
+        # 立即弹出喝水提示，造成开机语音与喝水提示抢占同一个气泡。
+        # 正常运行中的喝水计时仍然保留，从本次启动重新累计。
+        self._reminder_elapsed["喝水"] = 0
+        self._control_settings["reminder_elapsed"] = {"喝水": 0}
+
         # 首次启动没有配置文件时，也立即写入默认提醒设置。
-        # 已有配置时则保存读取后的原设置，不会重置用户选择。
+        # 已有配置时保留用户的喝水/睡觉开关等设置，但不保留上次启动的喝水累计时间。
         self._save_control_settings()
 
         # 番茄钟相关
@@ -3269,6 +3710,7 @@ class DesktopPet(QWidget):
         if (hasattr(self, "bubble") and self.bubble.isVisible()
                 and getattr(self, "bubble_mode", "follow") == "follow"):
             self.update_bubble_position()
+        self._update_following_panels()
 
     # ==================== 闲置弹跳动画 ====================
     def _update_idle_bounce(self):
@@ -4898,6 +5340,14 @@ class DesktopPet(QWidget):
             self.note_window.close()
         if hasattr(self, "note_repeat_timer"):
             self.note_repeat_timer.stop()
+        # 退出前等待仍在运行的新闻抓取线程结束，避免 Qt 销毁运行中的线程
+        # 触发 fail-fast 崩溃，同时不阻塞太久。
+        for _w in list(_active_news_workers):
+            try:
+                if _w.isRunning():
+                    _w.wait(3000)
+            except Exception:
+                pass
         self.close()
         QApplication.quit()
 
