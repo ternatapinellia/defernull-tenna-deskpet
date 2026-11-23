@@ -19,7 +19,7 @@ Right-click the desktop pet to switch between different pet forms. **Form 2** ha
 Hold **Ctrl** and scroll the mouse wheel while hovering over the desktop pet to adjust its size.
 
 Release Links/下载链接
-https://github.com/ternatapinellia/defernull-tenna-deskpet/releases/tag/V6.1
+https://github.com/ternatapinellia/defernull-tenna-deskpet/releases/tag/V7.0
 
 下载release界面zip后解压，直接双击desktoppet.exe便可使用。备注：下载后打不开或者打开后立刻关闭请检查电脑安全中心和防火墙是否有放行该软件，大概率被防火墙杀了。
 
@@ -45,6 +45,16 @@ https://github.com/user-attachments/assets/c6077882-d0bc-42c3-88cf-bf14ebfdd5a3
 <img width="482" height="770" alt="屏幕截图 2026-08-26 154302" src="https://github.com/user-attachments/assets/c6f0e9be-ad18-4594-bbfe-57f1d16f0054" />
 
 https://github.com/user-attachments/assets/1976eea6-9234-41fb-9144-256ac8ccacea
+
+——
+
+v7.0更新
+
+1.修复了提醒对话的确定框挪出气泡的问题
+
+2.将开机启动设置成可自动打开关闭的形式
+
+3.修复了桌宠重启以后不会出现在原位置的问题
 
 ——
 
