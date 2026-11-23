@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 import os
 # Qt 在 Windows 上遇到某些 Bricolage Grotesque 可变字体/字体变体时，
 # 可能输出 qt.qpa.fonts 的 enumerate warning。桌宠实际使用 Microsoft YaHei，
@@ -184,32 +184,67 @@ def save_tenna_volume(value):
         print(f"Tenna 音量保存失败: {e}")
 
 # ---------- Windows 开机自启 ----------
-def set_windows_autostart(enabled=True):
+AUTOSTART_APP_NAME = "DNTDesktopPet"
+AUTOSTART_RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
+
+
+def _autostart_command():
+    """返回写进注册表 Run 项的启动命令。"""
+    if getattr(sys, "frozen", False):
+        # 打包成 exe 后必须直接指向 exe 本身
+        return '"%s"' % os.path.abspath(sys.executable)
+    executable = sys.executable
+    if executable.lower().endswith("python.exe"):
+        pythonw = os.path.join(os.path.dirname(executable), "pythonw.exe")
+        if os.path.exists(pythonw):
+            executable = pythonw
+    script_path = os.path.abspath(sys.argv[0])
+    return '"%s" "%s"' % (executable, script_path)
+
+
+def get_windows_autostart():
+    """读取注册表里登记的自启命令；没有登记时返回 None。"""
     try:
-        run_key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
-        app_name = "DNTDesktopPet"
         with winreg.OpenKey(
             winreg.HKEY_CURRENT_USER,
-            run_key_path,
+            AUTOSTART_RUN_KEY,
             0,
-            winreg.KEY_SET_VALUE | winreg.KEY_QUERY_VALUE
+            winreg.KEY_QUERY_VALUE
         ) as key:
-            if enabled:
-                executable = sys.executable
-                if executable.lower().endswith("python.exe"):
-                    pythonw = os.path.join(os.path.dirname(executable), "pythonw.exe")
-                    if os.path.exists(pythonw):
-                        executable = pythonw
-                script_path = os.path.abspath(sys.argv[0])
-                command = f'"{executable}" "{script_path}"'
-                winreg.SetValueEx(key, app_name, 0, winreg.REG_SZ, command)
-            else:
-                try:
-                    winreg.DeleteValue(key, app_name)
-                except FileNotFoundError:
-                    pass
+            value, _ = winreg.QueryValueEx(key, AUTOSTART_APP_NAME)
+            return value or None
+    except Exception:
+        return None
+
+
+def set_windows_autostart(enabled=True):
+    try:
+        if enabled:
+            command = _autostart_command()
+            # 关键修复：Run 项在部分系统上并不存在，
+            # 旧代码用 OpenKey 会直接抛异常，导致自启开关完全无效。
+            with winreg.CreateKeyEx(
+                winreg.HKEY_CURRENT_USER,
+                AUTOSTART_RUN_KEY,
+                0,
+                winreg.KEY_SET_VALUE | winreg.KEY_QUERY_VALUE
+            ) as key:
+                winreg.SetValueEx(key, AUTOSTART_APP_NAME, 0, winreg.REG_SZ, command)
+            return True
+        try:
+            with winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER,
+                AUTOSTART_RUN_KEY,
+                0,
+                winreg.KEY_SET_VALUE
+            ) as key:
+                winreg.DeleteValue(key, AUTOSTART_APP_NAME)
+        except FileNotFoundError:
+            pass
+        return True
     except Exception as e:
         print(f"设置 Windows 开机自启失败: {e}")
+        return False
 
 # ---------- 获取屏幕尺寸 ----------
 def get_screen_size():
@@ -740,6 +775,7 @@ class BubbleWidget(QWidget):
 
         screen_w, screen_h = get_screen_size()
         scale = min(screen_w / 1920, screen_h / 1080)
+        self.scale = scale
 
         self.bg_pixmap = QPixmap(resource_path("bubble.png"))
         scaled_width = int(self.bg_pixmap.width() * scale)
@@ -748,7 +784,17 @@ class BubbleWidget(QWidget):
         self.setFixedSize(self.bg_pixmap.size())
 
         self.label = QLabel(self)
-        self.label.setGeometry(int(130 * scale), int(85 * scale), int(340 * scale), int(160 * scale))
+        # The bubble's inner edge ends near y=244. Normal dialogue keeps the
+        # original 160px text height; confirmation text stops at y=190 so the
+        # whole confirm button can stay inside the white area.
+        self.normal_text_height = 160
+        self.confirm_text_height = 105
+        self.label.setGeometry(
+            int(130 * scale),
+            int(85 * scale),
+            int(340 * scale),
+            int(self.normal_text_height * scale)
+        )
         self.label.setWordWrap(True)
         self.label.setAlignment(Qt.AlignLeft | Qt.AlignTop)
         self.label.setStyleSheet("background: transparent; color: #2c3e50;")
@@ -807,13 +853,11 @@ class BubbleWidget(QWidget):
         self.confirm_button.setText("Confirm" if lang == "en" else "确认")
         screen_w, screen_h = get_screen_size()
         scale = min(screen_w / 1920, screen_h / 1080)
-        # 原版把确认按钮定位在 (width-248, height-105)，正好压在文字区
-        # (130,85)-(470,245) 的最后几行上，英文 "Confirm" 比 "确认" 长时
-        # 与正文叠加（第 3 条）。这里把按钮移到文字区下方的空白带，
-        # 并对文字区右边距对齐，中英文都不再遮挡正文。
+        # 按钮完整放在气泡内沿内（白色区域底边约 y=244），
+        # 与确认态正文区底边 y=190 之间保留 9px，避免中英文遮挡。
         self.confirm_button.setGeometry(
-            int(355 * scale),
-            int(252 * scale),
+            int(348 * scale),
+            int(199 * scale),
             int(115 * scale),
             int(34 * scale)
         )
@@ -872,8 +916,25 @@ class BubbleWidget(QWidget):
         rect = fm.boundingRect(0, 0, self.label.width(), 10000, Qt.TextWordWrap, text)
         return rect.height()
 
+    def _bubble_text_height(self):
+        limit = self.confirm_text_height if getattr(
+            self, 'current_requires_confirmation', False
+        ) else self.normal_text_height
+        return int(limit * self.scale)
+
+    def _apply_text_geometry(self):
+        text_height = self.confirm_text_height if getattr(
+            self, 'current_requires_confirmation', False
+        ) else self.normal_text_height
+        self.label.setGeometry(
+            int(130 * self.scale),
+            int(85 * self.scale),
+            int(340 * self.scale),
+            int(text_height * self.scale)
+        )
+
     def _split_for_bubble(self, text):
-        max_height = int(160 * getattr(self.parent(), "scale", 1.0))
+        max_height = self._bubble_text_height()
         if self._text_height(text) <= max_height:
             return text, ""
 
@@ -906,7 +967,7 @@ class BubbleWidget(QWidget):
         if self.char_index < len(self.full_text):
             self.char_index += 1
             current_text = self.full_text[:self.char_index]
-            if self._text_height(current_text) > int(160 * getattr(self.parent(), "scale", 1.0)):
+            if self._text_height(current_text) > self._bubble_text_height():
                 visible_text, remaining = self._split_for_bubble(self.full_text)
                 self.typing_timer.stop()
                 self.label.setText(visible_text)
@@ -946,6 +1007,7 @@ class BubbleWidget(QWidget):
     def start_typing(self, text, requires_confirmation=False):
         self.label.setFont(self.normal_font)
         self.current_requires_confirmation = bool(requires_confirmation)
+        self._apply_text_geometry()
         self.full_text = text
         self.char_index = 0
         self.label.clear()
@@ -966,6 +1028,8 @@ class BubbleWidget(QWidget):
         self.typing_timer.start(self.typing_interval)
 
     def show_big_text(self, text):
+        self.current_requires_confirmation = False
+        self._apply_text_geometry()
         self.label.setFont(self.big_font)
         self.label.setText(text)
         self.full_text = text
@@ -2979,7 +3043,6 @@ def _load_dnt_save_layers():
 class DesktopPet(QWidget):
     def __init__(self):
         super().__init__()
-        set_windows_autostart(True)
         self.setWindowFlags(
             Qt.FramelessWindowHint
             | Qt.WindowStaysOnTopHint
@@ -3163,6 +3226,8 @@ class DesktopPet(QWidget):
         self.pet_zoom_min = 0.5
         self.pet_zoom_max = 2.0
         self.pet_zoom_step = 0.1
+        self._load_pet_state()
+        self._sync_autostart()
 
         self._load_current_outfit(self.current_outfit)
 
@@ -3196,6 +3261,7 @@ class DesktopPet(QWidget):
         # 这样点击桌宠时既能保留拖动/右键菜单，又不会出现“只有动画、没有对话”的问题。
         self.label.installEventFilter(self)
         self._show_pet_frame_fixed(self.pet_static)
+        self._restore_pet_state()
 
         # 气泡位置模式：follow = 跟随桌宠，fixed = 固定右下角
         self.bubble_mode = "follow"
@@ -4153,6 +4219,8 @@ class DesktopPet(QWidget):
             self.toggle_auto_dialog_action.setText("Pause Auto Dialog" if self.auto_dialog_enabled else "Start Auto Dialog")
             self.lang_action.setText("中文")
             self.quit_action.setText("Exit")
+            if hasattr(self, "autostart_action"):
+                self.autostart_action.setText("Start with Windows")
             if hasattr(self, 'tray_icon'):
                 tray_menu = self.tray_icon.contextMenu()
                 if tray_menu:
@@ -4188,6 +4256,8 @@ class DesktopPet(QWidget):
             self.toggle_auto_dialog_action.setText("暂停自动对话" if self.auto_dialog_enabled else "开始自动对话")
             self.lang_action.setText("English")
             self.quit_action.setText("退出")
+            if hasattr(self, "autostart_action"):
+                self.autostart_action.setText("开机自启")
             if hasattr(self, 'tray_icon'):
                 tray_menu = self.tray_icon.contextMenu()
                 if tray_menu:
@@ -4603,6 +4673,104 @@ class DesktopPet(QWidget):
             combined = self._compose_black_screen_overlay(self.current_pixmap, outfit)
             if combined is not None and not combined.isNull():
                 self._set_mouth_frame_centered(combined)
+        self._save_pet_state()
+
+
+    def _pet_state_file(self):
+        return writable_app_path("deskpet_state.json")
+
+    def _load_pet_state(self):
+        self._pet_saved_x = None
+        self._pet_saved_y = None
+        self._pet_saved_cx = None
+        self._pet_saved_cy = None
+        self._pet_saved_zoom = 1.0
+        self.autostart_enabled = True
+        try:
+            with open(self._pet_state_file(), "r", encoding="utf-8") as f:
+                data = json.load(f)
+            self._pet_saved_x = int(data.get("x")) if data.get("x") is not None else None
+            self._pet_saved_y = int(data.get("y")) if data.get("y") is not None else None
+            self._pet_saved_cx = int(data.get("center_x")) if data.get("center_x") is not None else None
+            self._pet_saved_cy = int(data.get("center_y")) if data.get("center_y") is not None else None
+            self._pet_saved_zoom = max(self.pet_zoom_min, min(self.pet_zoom_max, float(data.get("zoom", 1.0))))
+            self.autostart_enabled = bool(data.get("autostart_enabled", True))
+        except Exception:
+            pass
+        # 关键修复：必须在加载角色帧之前就把倍率设好，
+        # 否则 DNT 帧会先按 1.0 渲染，上次的大小根本恢复不了。
+        self.pet_zoom = float(self._pet_saved_zoom)
+
+    def _save_pet_state(self):
+        try:
+            if hasattr(self, "label") and self.label is not None:
+                # 桌宠始终画在主窗口中心，所以用窗口中心作为位置；
+                # 不能用 QLabel 的几何位置，否则待机弹跳会让保存的坐标不断抖动。
+                origin = self.mapToGlobal(QPoint(0, 0))
+                self._pet_saved_x = int(origin.x())
+                self._pet_saved_y = int(origin.y())
+                self._pet_saved_cx = int(round(origin.x() + self.width() / 2.0))
+                self._pet_saved_cy = int(round(origin.y() + self.height() / 2.0))
+            data = {
+                "x": self._pet_saved_x,
+                "y": self._pet_saved_y,
+                "center_x": self._pet_saved_cx,
+                "center_y": self._pet_saved_cy,
+                "zoom": float(getattr(self, "pet_zoom", 1.0)),
+                "autostart_enabled": bool(getattr(self, "autostart_enabled", True)),
+            }
+            with open(self._pet_state_file(), "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            print("pet state save failed:", e)
+
+    def _sync_autostart(self):
+        """让注册表与「开机自启」勾选状态保持一致。"""
+        enabled = bool(getattr(self, "autostart_enabled", True))
+        set_windows_autostart(enabled)
+        if hasattr(self, "autostart_action"):
+            self.autostart_action.setChecked(enabled)
+
+    def _restore_pet_state(self):
+        self.pet_zoom = float(getattr(self, "_pet_saved_zoom", 1.0))
+        self._rescale_classic_pet()
+        if not hasattr(self, "label"):
+            return
+        # 主窗口是全屏席幕窗口，桌宠的位置实际由 QLabel 的
+        # 几何位置决定，所以这里只保存/恢复一个屏幕坐标中心。
+        cx = getattr(self, "_pet_saved_cx", None)
+        cy = getattr(self, "_pet_saved_cy", None)
+        if (cx is None or cy is None) and self._pet_saved_x is not None and self._pet_saved_y is not None:
+            # 兼容旧版只存左上角的状态文件。
+            cx = self._pet_saved_x + self.label.width() / 2.0
+            cy = self._pet_saved_y + self.label.height() / 2.0
+        if cx is None or cy is None:
+            return
+
+        w = self.label.width()
+        h = self.label.height()
+        screen = QApplication.screenAt(QPoint(int(cx), int(cy)))
+        if screen is None:
+            screen = QApplication.primaryScreen()
+        area = screen.availableGeometry()
+        cx = max(area.left() + w / 2.0, min(float(cx), area.right() - w / 2.0))
+        cy = max(area.top() + h / 2.0, min(float(cy), area.bottom() - h / 2.0))
+
+        # 桌宠永远画在主窗口中心，所以把主窗口移到“目标中心 - 半宽高”即可。
+        # 这样下面的待机弹跳重绘也不会把桌宠拉回屏幕中心。
+        self.move(
+            int(round(cx - self.width() / 2.0)),
+            int(round(cy - self.height() / 2.0)),
+        )
+        self._show_pet_frame_fixed(self.pet_static)
+        self.update_bubble_position()
+
+    def _set_autostart(self, enabled):
+        self.autostart_enabled = bool(enabled)
+        set_windows_autostart(self.autostart_enabled)
+        if hasattr(self, "autostart_action"):
+            self.autostart_action.setChecked(self.autostart_enabled)
+        self._save_pet_state()
 
     def eventFilter(self, obj, event):
         # 桌宠图片 QLabel 会吃掉鼠标事件，所以统一转发到主窗口。
@@ -4688,6 +4856,8 @@ class DesktopPet(QWidget):
                     self._on_pet_click()
             self.drag_pos = None
             self.is_dragging = False
+            # 拖动结束时正式记下位置，下次启动原样还原。
+            self._save_pet_state()
 
     def clear_dialog_timer(self):
         if self.dialog_timer is not None:
@@ -5272,6 +5442,11 @@ class DesktopPet(QWidget):
         self.toggle_visibility_action.triggered.connect(self._toggle_visibility_from_menu)
         self.toggle_auto_dialog_action = QAction(self)
         self.toggle_auto_dialog_action.triggered.connect(self._toggle_auto_dialog)
+
+        self.autostart_action = QAction(self)
+        self.autostart_action.setCheckable(True)
+        self.autostart_action.setChecked(bool(getattr(self, "autostart_enabled", True)))
+        self.autostart_action.triggered.connect(self._set_autostart)
         self.lang_action = QAction(self)
         self.lang_action.triggered.connect(self.switch_language)
         self.quit_action = QAction(self)
@@ -5291,6 +5466,7 @@ class DesktopPet(QWidget):
         self.menu.addAction(self.toggle_animation_action)
         self.menu.addAction(self.toggle_visibility_action)
         self.menu.addAction(self.toggle_auto_dialog_action)
+        self.menu.addAction(self.autostart_action)
         self.menu.addSeparator()
         self.menu.addAction(self.lang_action)
         self.menu.addSeparator()
@@ -5308,6 +5484,7 @@ class DesktopPet(QWidget):
         self._close_timer.start(5000)
 
     def _prepare_close(self):
+        self._save_pet_state()
         # 关闭时彻底关闭黑屏，并统一显示文件夹中的 pet-happy.png 1 秒。
         if hasattr(self, 'black_screen_timer'):
             self.black_screen_timer.stop()
