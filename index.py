@@ -187,6 +187,56 @@ def save_tenna_volume(value):
 AUTOSTART_APP_NAME = "DNTDesktopPet"
 AUTOSTART_RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 
+AUTOSTART_APPROVED_KEY = (
+    r"Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run"
+)
+# 任务管理器“启动应用”的状态值：首字节 02 为启用，03 等其它值表示被禁用。
+AUTOSTART_ENABLED_BYTES = bytes([2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
+
+
+def _clear_windows_autostart_block():
+    """清掉“启动应用”里残留的禁用标记，否则注册表有项系统也不会拉起。"""
+    try:
+        with winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            AUTOSTART_APPROVED_KEY,
+            0,
+            winreg.KEY_QUERY_VALUE | winreg.KEY_SET_VALUE
+        ) as key:
+            try:
+                value, value_type = winreg.QueryValueEx(key, AUTOSTART_APP_NAME)
+            except FileNotFoundError:
+                return
+            if value_type == winreg.REG_BINARY and value and value[0] != 2:
+                winreg.SetValueEx(
+                    key,
+                    AUTOSTART_APP_NAME,
+                    0,
+                    winreg.REG_BINARY,
+                    AUTOSTART_ENABLED_BYTES
+                )
+    except FileNotFoundError:
+        pass
+    except OSError as e:
+        print(f"清理开机自启禁用标记失败: {e}")
+
+
+def _clear_windows_autostart_entry():
+    """删除 Run 项以及“启动应用”里的审批记录。"""
+    for key_path in (AUTOSTART_RUN_KEY, AUTOSTART_APPROVED_KEY):
+        try:
+            with winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER,
+                key_path,
+                0,
+                winreg.KEY_SET_VALUE
+            ) as key:
+                winreg.DeleteValue(key, AUTOSTART_APP_NAME)
+        except FileNotFoundError:
+            pass
+        except OSError as e:
+            print(f"删除开机自启项失败: {e}")
+
 
 def _autostart_command():
     """返回写进注册表 Run 项的启动命令。"""
@@ -230,18 +280,16 @@ def set_windows_autostart(enabled=True):
                 winreg.KEY_SET_VALUE | winreg.KEY_QUERY_VALUE
             ) as key:
                 winreg.SetValueEx(key, AUTOSTART_APP_NAME, 0, winreg.REG_SZ, command)
+            # 写完 Run 项后必须清掉禁用标记，并回读校验，
+            # 否则会像旧版一样静默失败、开关看着是开的却不开机启动。
+            _clear_windows_autostart_block()
+            registered = get_windows_autostart()
+            if registered != command:
+                print(f"开机自启写入校验失败: 期望 {command!r}，实际 {registered!r}")
+                return False
             return True
-        try:
-            with winreg.OpenKey(
-                winreg.HKEY_CURRENT_USER,
-                AUTOSTART_RUN_KEY,
-                0,
-                winreg.KEY_SET_VALUE
-            ) as key:
-                winreg.DeleteValue(key, AUTOSTART_APP_NAME)
-        except FileNotFoundError:
-            pass
-        return True
+        _clear_windows_autostart_entry()
+        return get_windows_autostart() is None
     except Exception as e:
         print(f"设置 Windows 开机自启失败: {e}")
         return False
@@ -4766,11 +4814,22 @@ class DesktopPet(QWidget):
         self.update_bubble_position()
 
     def _set_autostart(self, enabled):
-        self.autostart_enabled = bool(enabled)
-        set_windows_autostart(self.autostart_enabled)
+        enabled = bool(enabled)
+        ok = set_windows_autostart(enabled)
+        # 写注册表失败时把开关拨回去，不能让它显示成已开启。
+        self.autostart_enabled = enabled if ok else (not enabled)
         if hasattr(self, "autostart_action"):
             self.autostart_action.setChecked(self.autostart_enabled)
         self._save_pet_state()
+        if not ok and hasattr(self, "tray_icon"):
+            self.tray_icon.showMessage(
+                "开机自启" if self.lang == "zh" else "Start with Windows",
+                ("写入注册表失败，请检查安全软件或权限设置。"
+                 if self.lang == "zh"
+                 else "Failed to write the startup registry entry."),
+                QSystemTrayIcon.Warning,
+                4000
+            )
 
     def eventFilter(self, obj, event):
         # 桌宠图片 QLabel 会吃掉鼠标事件，所以统一转发到主窗口。
