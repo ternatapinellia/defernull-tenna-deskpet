@@ -19,7 +19,7 @@ Right-click the desktop pet to switch between different pet forms. **Form 2** ha
 Hold **Ctrl** and scroll the mouse wheel while hovering over the desktop pet to adjust its size.
 
 Release Links/下载链接
-https://github.com/ternatapinellia/defernull-tenna-deskpet/releases/tag/v7.1
+https://github.com/ternatapinellia/defernull-tenna-deskpet/releases/tag/v7.2
 
 下载release界面zip后解压，直接双击desktoppet.exe便可使用。备注：下载后打不开或者打开后立刻关闭请检查电脑安全中心和防火墙是否有放行该软件，大概率被防火墙杀了。
 
@@ -45,6 +45,14 @@ https://github.com/user-attachments/assets/c6077882-d0bc-42c3-88cf-bf14ebfdd5a3
 <img width="482" height="770" alt="屏幕截图 2026-08-26 154302" src="https://github.com/user-attachments/assets/c6f0e9be-ad18-4594-bbfe-57f1d16f0054" />
 
 https://github.com/user-attachments/assets/1976eea6-9234-41fb-9144-256ac8ccacea
+
+——
+
+v7.2更新
+
+1.开机自启加了兜底方案：注册表被拦截时自动改用「启动文件夹快捷方式」，并在程序目录写 autostart_error.log 记录原因。
+
+2.重新打包，确保压缩包里包含 dnt.save 和 tenna_voice_normal / tenna_voice_reminder 音效目录。
 
 ——
 

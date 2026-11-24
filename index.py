@@ -193,32 +193,239 @@ AUTOSTART_APPROVED_KEY = (
 # 任务管理器“启动应用”的状态值：首字节 02 为启用，03 等其它值表示被禁用。
 AUTOSTART_ENABLED_BYTES = bytes([2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
 
+# 注册表 Run 项在部分机器上会被安全软件或组策略静默拦掉；打包成 windowed
+# exe 后 print 又完全不可见，失败时一点痕迹都不留。这里把自启异常统一写进
+# 程序目录的 autostart_error.log，并提供“启动文件夹快捷方式”作为兜底方案。
+AUTOSTART_LOG_NAME = "autostart_error.log"
+AUTOSTART_LNK_NAME = "DNT Desktop Pet.lnk"
+
+
+def _startup_dir():
+    """返回当前用户“启动”文件夹路径。"""
+    appdata = os.environ.get("APPDATA") or os.path.expanduser(
+        r"~\AppData\Roaming"
+    )
+    return os.path.join(
+        appdata, r"Microsoft\Windows\Start Menu\Programs\Startup"
+    )
+
+
+def _startup_lnk_path():
+    return os.path.join(_startup_dir(), AUTOSTART_LNK_NAME)
+
+
+def _log_autostart_error(message):
+    """把自启失败原因写进程序目录日志，避免被 windowed exe 吞掉。
+
+    程序每次启动都会走一遍自启同步，日志会持续增长；超过 64KB 时只保留
+    最近 200 行，避免日志文件无限膨胀。
+    """
+    line = "[%s] %s\n" % (time.strftime("%Y-%m-%d %H:%M:%S"), message)
+    path = writable_app_path(AUTOSTART_LOG_NAME)
+    try:
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(line)
+        try:
+            if os.path.getsize(path) > 64 * 1024:
+                with open(path, "r", encoding="utf-8", errors="replace") as f:
+                    kept = f.readlines()[-200:]
+                with open(path, "w", encoding="utf-8") as f:
+                    f.writelines(kept)
+        except OSError:
+            pass
+    except Exception:
+        try:
+            print(line.strip())
+        except Exception:
+            pass
+
+
+def _autostart_target():
+    """返回 (启动目标, 工作目录)：打包后指向 exe，源码运行指向 pythonw。"""
+    if getattr(sys, "frozen", False):
+        target = os.path.abspath(sys.executable)
+        return target, os.path.dirname(target)
+    executable = sys.executable
+    if executable.lower().endswith("python.exe"):
+        pythonw = os.path.join(os.path.dirname(executable), "pythonw.exe")
+        if os.path.exists(pythonw):
+            executable = pythonw
+    script_path = os.path.abspath(sys.argv[0])
+    return executable, os.path.dirname(script_path)
+
+
+def _powershell_executable():
+    """定位 powershell.exe；找不到时返回 None。"""
+    root = os.environ.get("SystemRoot", r"C:\Windows")
+    for rel in (
+        r"System32\WindowsPowerShell\v1.0\powershell.exe",
+        r"SysWOW64\WindowsPowerShell\v1.0\powershell.exe",
+    ):
+        path = os.path.join(root, rel)
+        if os.path.isfile(path):
+            return path
+    return None
+
+
+# 用系统自带的 WScript.Shell 建快捷方式，避免引入 pywin32 依赖。
+# 参数通过环境变量传入再写临时 .ps1 执行：-Command 不会把多余参数填进
+# $args（实测 $args[2] 为空导致 Split-Path 报错），用 -File 最稳定。
+AUTOSTART_PS_CREATE_LNK = """$ErrorActionPreference = 'Stop'
+$target = $env:DNT_LNK_TARGET
+$work = $env:DNT_LNK_WORK
+$lnk = $env:DNT_LNK_PATH
+$dir = Split-Path -Parent $lnk
+if (-not (Test-Path -LiteralPath $dir)) {
+    New-Item -ItemType Directory -Path $dir -Force | Out-Null
+}
+$shell = New-Object -ComObject WScript.Shell
+$s = $shell.CreateShortcut($lnk)
+$s.TargetPath = $target
+$s.WorkingDirectory = $work
+$s.WindowStyle = 1
+if ($target -like '*.exe') { $s.IconLocation = ($target + ',0') }
+$s.Save()
+if (-not (Test-Path -LiteralPath $lnk)) {
+    throw ('shortcut not created: ' + $lnk)
+}
+"""
+
+
+def has_startup_folder_entry():
+    """启动文件夹里是否已有本程序的快捷方式。"""
+    try:
+        folder = _startup_dir()
+        if not os.path.isdir(folder):
+            return False
+        primary = AUTOSTART_LNK_NAME.lower()
+        for name in os.listdir(folder):
+            if not name.lower().endswith(".lnk"):
+                continue
+            if name.lower() == primary:
+                return True
+            # 兼容历史遗留的 python/index.py 快捷方式。
+            try:
+                with open(os.path.join(folder, name), "rb") as f:
+                    raw = f.read()
+            except OSError:
+                continue
+            if b"index.py" in raw or b"DesktopPet.exe" in raw:
+                return True
+    except Exception as e:
+        _log_autostart_error("扫描启动文件夹失败: %s" % e)
+    return False
+
+
+def create_startup_folder_entry():
+    """在启动文件夹创建指向本程序的快捷方式；成功返回 True。"""
+    target, work = _autostart_target()
+    lnk = _startup_lnk_path()
+    powershell = _powershell_executable()
+    if not powershell:
+        _log_autostart_error("创建启动文件夹快捷方式失败: 未找到 powershell.exe")
+        return False
+    script_path = writable_app_path("_autostart_lnk.ps1")
+    try:
+        # powershell.exe 5.1 读取 UTF-8 脚本需要 BOM，否则中文路径会被误解码。
+        with open(script_path, "w", encoding="utf-8-sig", newline="\r\n") as f:
+            f.write(AUTOSTART_PS_CREATE_LNK)
+    except Exception as e:
+        _log_autostart_error("写入快捷方式脚本失败: %s" % e)
+        return False
+
+    try:
+        import subprocess
+        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        env = dict(os.environ)
+        env["DNT_LNK_TARGET"] = target
+        env["DNT_LNK_WORK"] = work
+        env["DNT_LNK_PATH"] = lnk
+        proc = subprocess.run(
+            [
+                powershell,
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy", "Bypass",
+                "-WindowStyle", "Hidden",
+                "-File", script_path,
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=30,
+            creationflags=flags,
+            env=env,
+        )
+        if proc.returncode != 0 or not os.path.isfile(lnk):
+            detail = (proc.stderr or b"").decode("mbcs", "replace").strip()
+            _log_autostart_error(
+                "创建启动文件夹快捷方式失败: exit=%s %s"
+                % (proc.returncode, detail[:400])
+            )
+            return False
+        return True
+    except Exception as e:
+        _log_autostart_error("创建启动文件夹快捷方式异常: %s" % e)
+        return False
+    finally:
+        try:
+            os.remove(script_path)
+        except OSError:
+            pass
+
+
+def remove_startup_folder_entry():
+    """删除本程序在启动文件夹里的快捷方式。"""
+    ok = True
+    path = _startup_lnk_path()
+    try:
+        if os.path.isfile(path):
+            os.remove(path)
+    except OSError as e:
+        ok = False
+        _log_autostart_error("删除启动文件夹快捷方式失败: %s" % e)
+    return ok
+
 
 def _clear_windows_autostart_block():
     """清掉“启动应用”里残留的禁用标记，否则注册表有项系统也不会拉起。"""
     try:
-        with winreg.OpenKey(
+        key = winreg.CreateKeyEx(
             winreg.HKEY_CURRENT_USER,
             AUTOSTART_APPROVED_KEY,
             0,
             winreg.KEY_QUERY_VALUE | winreg.KEY_SET_VALUE
-        ) as key:
-            try:
-                value, value_type = winreg.QueryValueEx(key, AUTOSTART_APP_NAME)
-            except FileNotFoundError:
-                return
-            if value_type == winreg.REG_BINARY and value and value[0] != 2:
-                winreg.SetValueEx(
-                    key,
-                    AUTOSTART_APP_NAME,
-                    0,
-                    winreg.REG_BINARY,
-                    AUTOSTART_ENABLED_BYTES
-                )
-    except FileNotFoundError:
-        pass
+        )
     except OSError as e:
-        print(f"清理开机自启禁用标记失败: {e}")
+        _log_autostart_error("打开 StartupApproved 失败: %s" % e)
+        return
+    try:
+        try:
+            value, value_type = winreg.QueryValueEx(key, AUTOSTART_APP_NAME)
+        except FileNotFoundError:
+            # 没有记录时主动写一条“已启用”，避免系统按默认值处理。
+            winreg.SetValueEx(
+                key,
+                AUTOSTART_APP_NAME,
+                0,
+                winreg.REG_BINARY,
+                AUTOSTART_ENABLED_BYTES
+            )
+            return
+        if value_type != winreg.REG_BINARY or value != AUTOSTART_ENABLED_BYTES:
+            winreg.SetValueEx(
+                key,
+                AUTOSTART_APP_NAME,
+                0,
+                winreg.REG_BINARY,
+                AUTOSTART_ENABLED_BYTES
+            )
+    except OSError as e:
+        _log_autostart_error("清理开机自启禁用标记失败: %s" % e)
+    finally:
+        try:
+            winreg.CloseKey(key)
+        except Exception:
+            pass
 
 
 def _clear_windows_autostart_entry():
@@ -235,21 +442,16 @@ def _clear_windows_autostart_entry():
         except FileNotFoundError:
             pass
         except OSError as e:
-            print(f"删除开机自启项失败: {e}")
+            _log_autostart_error("删除开机自启项失败: %s" % e)
 
 
 def _autostart_command():
     """返回写进注册表 Run 项的启动命令。"""
+    target, _work = _autostart_target()
     if getattr(sys, "frozen", False):
         # 打包成 exe 后必须直接指向 exe 本身
-        return '"%s"' % os.path.abspath(sys.executable)
-    executable = sys.executable
-    if executable.lower().endswith("python.exe"):
-        pythonw = os.path.join(os.path.dirname(executable), "pythonw.exe")
-        if os.path.exists(pythonw):
-            executable = pythonw
-    script_path = os.path.abspath(sys.argv[0])
-    return '"%s" "%s"' % (executable, script_path)
+        return '"%s"' % target
+    return '"%s" "%s"' % (target, os.path.abspath(sys.argv[0]))
 
 
 def get_windows_autostart():
@@ -267,31 +469,64 @@ def get_windows_autostart():
         return None
 
 
-def set_windows_autostart(enabled=True):
+def _write_run_entry():
+    """只负责写注册表 Run 项；返回 (是否成功, 说明)。"""
+    command = _autostart_command()
     try:
-        if enabled:
-            command = _autostart_command()
-            # 关键修复：Run 项在部分系统上并不存在，
-            # 旧代码用 OpenKey 会直接抛异常，导致自启开关完全无效。
-            with winreg.CreateKeyEx(
-                winreg.HKEY_CURRENT_USER,
-                AUTOSTART_RUN_KEY,
-                0,
-                winreg.KEY_SET_VALUE | winreg.KEY_QUERY_VALUE
-            ) as key:
-                winreg.SetValueEx(key, AUTOSTART_APP_NAME, 0, winreg.REG_SZ, command)
-            # 写完 Run 项后必须清掉禁用标记，并回读校验，
-            # 否则会像旧版一样静默失败、开关看着是开的却不开机启动。
-            _clear_windows_autostart_block()
-            registered = get_windows_autostart()
-            if registered != command:
-                print(f"开机自启写入校验失败: 期望 {command!r}，实际 {registered!r}")
-                return False
+        key = winreg.CreateKeyEx(
+            winreg.HKEY_CURRENT_USER,
+            AUTOSTART_RUN_KEY,
+            0,
+            winreg.KEY_SET_VALUE | winreg.KEY_QUERY_VALUE
+        )
+    except OSError as e:
+        return False, "CreateKeyEx 失败: %s: %s" % (type(e).__name__, e)
+    try:
+        winreg.SetValueEx(key, AUTOSTART_APP_NAME, 0, winreg.REG_SZ, command)
+    except OSError as e:
+        return False, "SetValueEx 失败: %s: %s" % (type(e).__name__, e)
+    finally:
+        try:
+            winreg.CloseKey(key)
+        except Exception:
+            pass
+
+    _clear_windows_autostart_block()
+    registered = get_windows_autostart()
+    if registered != command:
+        return False, "回读校验失败: 期望 %r，实际 %r" % (command, registered)
+    return True, command
+
+
+def set_windows_autostart(enabled=True):
+    """开关开机自启，返回是否成功。
+
+    优先写注册表 Run 项；写入被拦或回读校验失败时，退回到“启动文件夹
+    快捷方式”。两条路都失败才返回 False，并把原因写进 autostart_error.log。
+    """
+    try:
+        if not enabled:
+            remove_startup_folder_entry()
+            _clear_windows_autostart_entry()
+            return (get_windows_autostart() is None
+                    and not has_startup_folder_entry())
+
+        ok, detail = _write_run_entry()
+        if ok:
+            # Run 项成功时清掉启动文件夹里的旧快捷方式，避免开机启动两份。
+            remove_startup_folder_entry()
             return True
-        _clear_windows_autostart_entry()
-        return get_windows_autostart() is None
+
+        _log_autostart_error("注册表自启写入失败，改用启动文件夹: %s" % detail)
+        if create_startup_folder_entry():
+            _log_autostart_error("已改用启动文件夹快捷方式完成开机自启")
+            return True
+        _log_autostart_error("注册表与启动文件夹两种自启方式都失败了")
+        return False
     except Exception as e:
-        print(f"设置 Windows 开机自启失败: {e}")
+        _log_autostart_error(
+            "设置 Windows 开机自启失败: %s: %s" % (type(e).__name__, e)
+        )
         return False
 
 # ---------- 获取屏幕尺寸 ----------
