@@ -52,7 +52,7 @@ v7.2更新
 
 1.开机自启加了兜底方案：注册表被拦截时自动改用「启动文件夹快捷方式」，并在程序目录写 autostart_error.log 记录原因。
 
-2.重新打包，确保压缩包里包含 dnt.save 和 tenna_voice_normal / tenna_voice_reminder 音效目录。
+2.更换了旧的新闻api
 
 ——
 
