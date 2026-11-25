@@ -689,7 +689,7 @@ def fetch_news_zh():
     # 结果每个源都失败，于是永远回退内置新闻。这里修正字段名，
     # 并换成实测可直连的源。
     apis = [
-        {"name": "AIHOT", "url": "https://aihot.virxact.com/api/v1/items",
+        {"name": "AIHOT", "url": "https://aihot.news/api/v1/items",
          "params": {"mode": "selected", "window": "7d", "limit": 30},
          "parser": _parse_aihot},
         {"name": "澎湃新闻", "url": "https://newsnow.busiyi.world/api/s?id=thepaper",
