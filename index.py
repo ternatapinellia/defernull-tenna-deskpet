@@ -241,17 +241,21 @@ def _log_autostart_error(message):
 
 
 def _autostart_target():
-    """返回 (启动目标, 工作目录)：打包后指向 exe，源码运行指向 pythonw。"""
+    """返回 (启动目标, 工作目录, 启动参数)。
+
+    打包后直接指向 exe，不需要参数；源码运行时如果只把 pythonw.exe 写进启动项、
+    不带 index.py，开机拉起的只是一个空解释器，桌宠根本不会出现。
+    """
     if getattr(sys, "frozen", False):
         target = os.path.abspath(sys.executable)
-        return target, os.path.dirname(target)
+        return target, os.path.dirname(target), ""
     executable = sys.executable
     if executable.lower().endswith("python.exe"):
         pythonw = os.path.join(os.path.dirname(executable), "pythonw.exe")
         if os.path.exists(pythonw):
             executable = pythonw
     script_path = os.path.abspath(sys.argv[0])
-    return executable, os.path.dirname(script_path)
+    return executable, os.path.dirname(script_path), '"%s"' % script_path
 
 
 def _powershell_executable():
@@ -274,6 +278,7 @@ AUTOSTART_PS_CREATE_LNK = """$ErrorActionPreference = 'Stop'
 $target = $env:DNT_LNK_TARGET
 $work = $env:DNT_LNK_WORK
 $lnk = $env:DNT_LNK_PATH
+$arguments = $env:DNT_LNK_ARGS
 $dir = Split-Path -Parent $lnk
 if (-not (Test-Path -LiteralPath $dir)) {
     New-Item -ItemType Directory -Path $dir -Force | Out-Null
@@ -281,6 +286,7 @@ if (-not (Test-Path -LiteralPath $dir)) {
 $shell = New-Object -ComObject WScript.Shell
 $s = $shell.CreateShortcut($lnk)
 $s.TargetPath = $target
+if ($arguments) { $s.Arguments = $arguments }
 $s.WorkingDirectory = $work
 $s.WindowStyle = 1
 if ($target -like '*.exe') { $s.IconLocation = ($target + ',0') }
@@ -289,6 +295,29 @@ if (-not (Test-Path -LiteralPath $lnk)) {
     throw ('shortcut not created: ' + $lnk)
 }
 """
+
+
+def _lnk_contains(raw, needle):
+    """快捷方式里的字符串可能以 ASCII 或 UTF-16LE 存放，两种都要查。"""
+    needle_ascii = needle.encode("ascii", "ignore")
+    return (needle_ascii in raw) or (needle.encode("utf-16-le") in raw)
+
+
+def _startup_lnk_is_valid(path):
+    """启动文件夹里的快捷方式是否真的能拉起程序。
+
+    源码运行时历史版本只写了 pythonw.exe、没带 index.py，那条快捷方式开机
+    等于什么都不做；这里把“目标不是 exe 又不带脚本”的快捷方式判为无效，
+    让下次同步自启时自动重建。
+    """
+    try:
+        if getattr(sys, "frozen", False):
+            return True
+        with open(path, "rb") as f:
+            raw = f.read()
+        return _lnk_contains(raw, "index.py" )
+    except OSError:
+        return False
 
 
 def has_startup_folder_entry():
@@ -301,16 +330,21 @@ def has_startup_folder_entry():
         for name in os.listdir(folder):
             if not name.lower().endswith(".lnk"):
                 continue
+            full = os.path.join(folder, name)
             if name.lower() == primary:
-                return True
+                if _startup_lnk_is_valid(full):
+                    return True
+                continue
             # 兼容历史遗留的 python/index.py 快捷方式。
             try:
-                with open(os.path.join(folder, name), "rb") as f:
+                with open(full, "rb") as f:
                     raw = f.read()
             except OSError:
                 continue
-            if b"index.py" in raw or b"DesktopPet.exe" in raw:
-                return True
+            if (_lnk_contains(raw, "index.py")
+                    or _lnk_contains(raw, "DesktopPet.exe")):
+                if _startup_lnk_is_valid(full):
+                    return True
     except Exception as e:
         _log_autostart_error("扫描启动文件夹失败: %s" % e)
     return False
@@ -318,7 +352,7 @@ def has_startup_folder_entry():
 
 def create_startup_folder_entry():
     """在启动文件夹创建指向本程序的快捷方式；成功返回 True。"""
-    target, work = _autostart_target()
+    target, work, arguments = _autostart_target()
     lnk = _startup_lnk_path()
     powershell = _powershell_executable()
     if not powershell:
@@ -340,6 +374,7 @@ def create_startup_folder_entry():
         env["DNT_LNK_TARGET"] = target
         env["DNT_LNK_WORK"] = work
         env["DNT_LNK_PATH"] = lnk
+        env["DNT_LNK_ARGS"] = arguments
         proc = subprocess.run(
             [
                 powershell,
@@ -447,11 +482,11 @@ def _clear_windows_autostart_entry():
 
 def _autostart_command():
     """返回写进注册表 Run 项的启动命令。"""
-    target, _work = _autostart_target()
+    target, _work, arguments = _autostart_target()
     if getattr(sys, "frozen", False):
         # 打包成 exe 后必须直接指向 exe 本身
         return '"%s"' % target
-    return '"%s" "%s"' % (target, os.path.abspath(sys.argv[0]))
+    return '"%s" %s' % (target, arguments)
 
 
 def get_windows_autostart():
@@ -4962,11 +4997,83 @@ class DesktopPet(QWidget):
     def _pet_state_file(self):
         return writable_app_path("deskpet_state.json")
 
+    def _pet_body_rect(self):
+        """返回桌宠可见身体在 label 画布里的矩形 (x, y, w, h)。
+
+        角色帧四周有一大圈透明边距：1920x1140 的屏幕下 label 画布是
+        1344x896，真正不透明的身体只有 349x447。位置必须按可见身体计算，
+        否则会被透明边距钳制在屏幕中央，看起来就是“位置没保存”。
+        """
+        label = getattr(self, "label", None)
+        if label is None:
+            return (0, 0, 1, 1)
+        # 必须用「静止帧」当基准，不能用 label 当前显示的画布：
+        # 启动那 1 秒的 pet-happy.png、张嘴帧、黑屏叠加帧的透明边距都不一样，
+        # 拿当前帧去量，保存和恢复会得到两个不同的身体中心（实测差 394/166），
+        # 重启后位置就漂了。
+        pm = self._pet_reference_pixmap()
+        if pm is None or pm.isNull():
+            return (0, 0, max(1, label.width()), max(1, label.height()))
+        key = (pm.cacheKey(), pm.width(), pm.height(), self.pet_zoom)
+        cached = getattr(self, "_pet_body_cache", None)
+        if cached is not None and cached[0] == key:
+            return cached[1]
+        bx, by, bw, bh = self._pixmap_body_rect(pm)
+        # 换算到固定渲染画布坐标：角色帧居中绘制，偏移 = (画布 - 帧) / 2。
+        canvas_w, canvas_h = self._get_pet_render_size()
+        body = (int(round(canvas_w / 2.0 - pm.width() / 2.0 + bx)),
+                int(round(canvas_h / 2.0 - pm.height() / 2.0 + by)),
+                bw, bh)
+        self._pet_body_cache = (key, body)
+        return body
+
+    def _pet_reference_pixmap(self):
+        """位置基准帧：当前形态的静止（闭嘴）第一帧，任何时刻都取这一个。"""
+        if getattr(self, "pet_form", "dnt") == "classic":
+            frames = getattr(self, "legacy_pet_frames", None)
+            if frames:
+                return frames[0]
+            return getattr(self, "pet_static", None)
+        pm = getattr(self, "pet_static", None)
+        if pm is not None and not pm.isNull():
+            return pm
+        frames = getattr(self, "pet_frames", None)
+        if frames:
+            return frames[0]
+        return None
+
+    @staticmethod
+    def _pixmap_body_rect(pm):
+        """单张图里不透明像素的包围盒 (x, y, w, h)。"""
+        try:
+            rect = QRegion(pm.mask()).boundingRect()
+        except Exception:
+            rect = None
+        if rect is None or rect.isEmpty():
+            return (0, 0, max(1, pm.width()), max(1, pm.height()))
+        return (int(rect.x()), int(rect.y()),
+                max(1, int(rect.width())), max(1, int(rect.height())))
+
+    def _pet_body_offset(self):
+        """可见身体中心相对主窗口左上角的偏移 (dx, dy)，按静止基准位置算。
+
+        不能用 label 当前的几何位置：待机弹跳会改 label 的 x/y，
+        存下来的坐标就会跟着抖。静止基准位置是 label 永远居中的那个点。
+        """
+        bx, by, bw, bh = self._pet_body_rect()
+        label = getattr(self, "label", None)
+        if label is None:
+            return (bw / 2.0, bh / 2.0)
+        base_x = int(round(self.width() / 2.0 - label.width() / 2.0))
+        base_y = int(round(self.height() / 2.0 - label.height() / 2.0))
+        return (base_x + bx + bw / 2.0, base_y + by + bh / 2.0)
+
     def _load_pet_state(self):
         self._pet_saved_x = None
         self._pet_saved_y = None
         self._pet_saved_cx = None
         self._pet_saved_cy = None
+        self._pet_center_mode = "legacy"
         self._pet_saved_zoom = 1.0
         self.autostart_enabled = True
         try:
@@ -4976,6 +5083,9 @@ class DesktopPet(QWidget):
             self._pet_saved_y = int(data.get("y")) if data.get("y") is not None else None
             self._pet_saved_cx = int(data.get("center_x")) if data.get("center_x") is not None else None
             self._pet_saved_cy = int(data.get("center_y")) if data.get("center_y") is not None else None
+            # 旧版状态文件里的 center_x/center_y 存的是整个窗口的中心，
+            # 新版存的是可见身体中心，两者相差一个透明边距，必须分开解释。
+            self._pet_center_mode = str(data.get("center_mode") or "window")
             self._pet_saved_zoom = max(self.pet_zoom_min, min(self.pet_zoom_max, float(data.get("zoom", 1.0))))
             self.autostart_enabled = bool(data.get("autostart_enabled", True))
         except Exception:
@@ -4987,18 +5097,27 @@ class DesktopPet(QWidget):
     def _save_pet_state(self):
         try:
             if hasattr(self, "label") and self.label is not None:
-                # 桌宠始终画在主窗口中心，所以用窗口中心作为位置；
-                # 不能用 QLabel 的几何位置，否则待机弹跳会让保存的坐标不断抖动。
+                # 记录可见身体的中心点：窗口是整块全屏画布，桌宠画在正中，
+                # 用画布中心的话改缩放后位置会漂，恢复时又会被透明边距
+                # 钳回屏幕中央。
+                # 基准就是窗口左上角：拖动本来就是移动整个窗口，恢复时把窗口
+                # 放回同一个位置，桌宠的屏幕位置就一定一致（换形态、改倍率也
+                # 不会漂）。center_x/center_y 只作为身体中心存下来供越界纠正用。
                 origin = self.mapToGlobal(QPoint(0, 0))
+                bx, by, bw, bh = self._pet_body_rect()
+                canvas_w, canvas_h = self._get_pet_render_size()
+                base_x = int(round(self.width() / 2.0 - canvas_w / 2.0))
+                base_y = int(round(self.height() / 2.0 - canvas_h / 2.0))
                 self._pet_saved_x = int(origin.x())
                 self._pet_saved_y = int(origin.y())
-                self._pet_saved_cx = int(round(origin.x() + self.width() / 2.0))
-                self._pet_saved_cy = int(round(origin.y() + self.height() / 2.0))
+                self._pet_saved_cx = int(round(origin.x() + base_x + bx + bw / 2.0))
+                self._pet_saved_cy = int(round(origin.y() + base_y + by + bh / 2.0))
             data = {
                 "x": self._pet_saved_x,
                 "y": self._pet_saved_y,
                 "center_x": self._pet_saved_cx,
                 "center_y": self._pet_saved_cy,
+                "center_mode": "body2",
                 "zoom": float(getattr(self, "pet_zoom", 1.0)),
                 "autostart_enabled": bool(getattr(self, "autostart_enabled", True)),
             }
@@ -5019,34 +5138,66 @@ class DesktopPet(QWidget):
         self._rescale_classic_pet()
         if not hasattr(self, "label"):
             return
-        # 主窗口是全屏席幕窗口，桌宠的位置实际由 QLabel 的
-        # 几何位置决定，所以这里只保存/恢复一个屏幕坐标中心。
-        cx = getattr(self, "_pet_saved_cx", None)
-        cy = getattr(self, "_pet_saved_cy", None)
-        if (cx is None or cy is None) and self._pet_saved_x is not None and self._pet_saved_y is not None:
-            # 兼容旧版只存左上角的状态文件。
-            cx = self._pet_saved_x + self.label.width() / 2.0
-            cy = self._pet_saved_y + self.label.height() / 2.0
-        if cx is None or cy is None:
-            return
+        # 恢复的唯一基准是保存下来的窗口左上角。所有历史版本写进 x/y 的也都是
+        # 窗口左上角，所以直接搬回去即可，不再做任何中心点换算——之前那些换算
+        # 正是“重启后位置漂掉”的来源。
+        bx, by, bw, bh = self._pet_body_rect()
+        origin_x = getattr(self, "_pet_saved_x", None)
+        origin_y = getattr(self, "_pet_saved_y", None)
+        if origin_x is None or origin_y is None:
+            # 极旧的失败状态文件才会没有 x/y，退回用身体中心反推窗口位置。
+            cx = getattr(self, "_pet_saved_cx", None)
+            cy = getattr(self, "_pet_saved_cy", None)
+            if cx is None or cy is None:
+                return
+            screen = QApplication.screenAt(QPoint(int(round(cx)), int(round(cy))))
+            if screen is None:
+                screen = QApplication.primaryScreen()
+            area = screen.availableGeometry()
+            cx = max(area.left() + bw / 2.0,
+                     min(float(cx), area.right() + 1 - bw / 2.0))
+            cy = max(area.top() + bh / 2.0,
+                     min(float(cy), area.bottom() + 1 - bh / 2.0))
+            dx, dy = self._pet_body_offset()
+            origin_x = int(round(cx - dx))
+            origin_y = int(round(cy - dy))
+        else:
+            # 位置原样恢复；只有可见身体（不是整块透明画布）越出屏幕时才做
+            # 最小纠正，这样贴边摆放重启后依然贴边，不会被拉回屏幕中央。
+            area = self._available_geometry_for_origin(origin_x, origin_y)
+            canvas_w, canvas_h = self._get_pet_render_size()
+            base_x = int(round(self.width() / 2.0 - canvas_w / 2.0))
+            base_y = int(round(self.height() / 2.0 - canvas_h / 2.0))
+            body_left = origin_x + base_x + bx
+            body_top = origin_y + base_y + by
+            body_right = body_left + bw
+            body_bottom = body_top + bh
+            dx_body = 0
+            dy_body = 0
+            if body_left < area.left():
+                dx_body = area.left() - body_left
+            elif body_right > area.right() + 1:
+                dx_body = (area.right() + 1) - body_right
+            if body_top < area.top():
+                dy_body = area.top() - body_top
+            elif body_bottom > area.bottom() + 1:
+                dy_body = (area.bottom() + 1) - body_bottom
+            origin_x += dx_body
+            origin_y += dy_body
 
-        w = self.label.width()
-        h = self.label.height()
-        screen = QApplication.screenAt(QPoint(int(cx), int(cy)))
-        if screen is None:
-            screen = QApplication.primaryScreen()
-        area = screen.availableGeometry()
-        cx = max(area.left() + w / 2.0, min(float(cx), area.right() - w / 2.0))
-        cy = max(area.top() + h / 2.0, min(float(cy), area.bottom() - h / 2.0))
-
-        # 桌宠永远画在主窗口中心，所以把主窗口移到“目标中心 - 半宽高”即可。
-        # 这样下面的待机弹跳重绘也不会把桌宠拉回屏幕中心。
-        self.move(
-            int(round(cx - self.width() / 2.0)),
-            int(round(cy - self.height() / 2.0)),
-        )
+        self.move(int(origin_x), int(origin_y))
         self._show_pet_frame_fixed(self.pet_static)
         self.update_bubble_position()
+        self._update_following_panels()
+
+    def _available_geometry_for_origin(self, origin_x, origin_y):
+        """取包含该点的屏幕可用区域；找不到时用主屏。"""
+        point = QPoint(int(round(self.width() / 2.0 + origin_x)),
+                       int(round(self.height() / 2.0 + origin_y)))
+        screen = QApplication.screenAt(point)
+        if screen is None:
+            screen = QApplication.primaryScreen()
+        return screen.availableGeometry()
 
     def _set_autostart(self, enabled):
         enabled = bool(enabled)
